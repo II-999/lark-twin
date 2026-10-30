@@ -67,6 +67,20 @@ def test_activity_marks_recalled(client):
     assert {r['msg_id']: r['recalled'] for r in rows if r['action'] == 'send'} == {'11': True, '12': False}
 
 
+def test_forward_counts_as_sent_message(client):
+    """larkx forward 转发出去的消息和发出的消息一样: 动态里能看出撤回没有, 能从网页撤回, 算进数字人今天发出的条数。"""
+    from larkx.storage import Storage
+    st = Storage()
+    st.log_action(actor='agent', action='forward', chat_id='c1', msg_id='21', content='[转发 1] x')
+    st.log_action(actor='agent', action='send', chat_id='c1', msg_id='22', content='好')
+    st.log_action(actor='human', action='recall', chat_id='c1', msg_id='21', content='撤回 21')
+    auth = {'Authorization': f'Bearer {web.get_token()}'}
+    rows = client.get('/api/activity', headers=auth).json()
+    assert [r['recalled'] for r in rows if r['action'] == 'forward'] == [True]
+    assert web._hourly(st)[-1]['sent'] == 2
+    assert st.find_action('agent', ('send', 'forward'), '21').chat_id == 'c1'
+
+
 def test_non_json_body_is_ignored(client):
     client.post('/login', json={'token': web.get_token()})
     # 不是 JSON(或不是 UTF-8)的请求体不会让中间件出错, 接口照常校验

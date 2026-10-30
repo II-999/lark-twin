@@ -130,7 +130,7 @@ def _hourly(st: Storage, hours: int = 24) -> list:
         for (ts,) in s.query(InboxItem.created_at).filter(InboxItem.created_at >= start):
             buckets[ts.replace(minute=0, second=0, microsecond=0)][0] += 1
         for (ts,) in s.query(Action.created_at).filter(Action.created_at >= start, Action.actor == 'agent',
-                                                       Action.action == 'send', Action.ok == 1):
+                                                       Action.action.in_(('send', 'forward')), Action.ok == 1):
             buckets[ts.replace(minute=0, second=0, microsecond=0)][1] += 1
     finally:
         s.close()
@@ -167,7 +167,7 @@ def overview(request: Request):
                     'last_active': sess.last_active if sess else None},
         'turn': turn and dict(turn, elapsed=time.time() - turn['started_at']),
         'inbox_pending': inbox_pending,
-        'today': {'handled': handled_today, 'sent': st.count_actions('agent', 'send', today), 'denied': denied_today,
+        'today': {'handled': handled_today, 'sent': st.count_actions('agent', ('send', 'forward'), today), 'denied': denied_today,
                   'messages': messages_today},
         'tasks_pending': len([t for t in st.list_tasks() if t.status == 'pending']),
         'takeovers': [{'chat_id': t.chat_id, 'until': t.until, 'goal': t.goal} for t in st.takeover_list() if t.until > time.time()],
@@ -182,7 +182,7 @@ def activity(request: Request):
     names = _chat_names(st)
     rows = st.list_actions(limit=int(request.query_params.get('limit', 100)))
     rows.reverse()
-    sends = ('send', 'deny_reply')
+    sends = ('send', 'forward', 'deny_reply')
     recalled = st.recalled_ids(r.msg_id for r in rows if r.action in sends)
     return _json([{'id': r.id, 'time': r.created_at, 'actor': r.actor, 'action': r.action, 'chat_id': r.chat_id,
                    'chat_name': names.get(r.chat_id, ''), 'msg_id': r.msg_id, 'content': r.content, 'ok': bool(r.ok),
@@ -209,7 +209,7 @@ def conversations(request: Request):
                     'body': p.get('body', ''), 'takeover': bool(p.get('note') and '接管' in p.get('note', '')),
                     'content': m.get('content', ''), 'replies': []})
     by_ref = {c['msg_id']: c for c in out}
-    sends = [a for a in st.actions_for_turns(list(by_ref)) if a.action == 'send']
+    sends = [a for a in st.actions_for_turns(list(by_ref)) if a.action in ('send', 'forward')]
     recalled = st.recalled_ids(a.msg_id for a in sends)
     for a in sends:
         by_ref[a.turn_ref]['replies'].append({'time': a.created_at, 'chat_id': a.chat_id, 'chat_name': names.get(a.chat_id, ''),
@@ -491,7 +491,7 @@ def recall(request: Request):
     if not msg_id.isdigit():
         raise ValueError('msg_id 不合法')
     st = Storage()
-    sent = (st.find_action('agent', 'send', msg_id) or st.find_action('human', 'send', msg_id)
+    sent = (st.find_action('agent', ('send', 'forward'), msg_id) or st.find_action('human', ('send', 'forward'), msg_id)
             or st.find_action('daemon', 'deny_reply', msg_id))
     try:
         LarkClient(LarkAuth()).api('messages.DeleteMessageRequest', {'id': msg_id})
