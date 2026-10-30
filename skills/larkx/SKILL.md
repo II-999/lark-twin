@@ -1,6 +1,6 @@
 ---
 name: larkx
-description: 以本人的飞书账号（网页登录态）操作飞书 IM：给人或群发消息、查聊天记录和历史、搜人和群、下载附件，以及指挥本人的飞书数字人（lark-twin）去做事、安排定时提醒、查看它发过什么。用户要求"在飞书上给某人发消息""看看某个群最近在聊什么""让我的数字人去……""提醒我……"时使用。飞书文档、表格、日历请用官方 lark-cli，不用本 skill。
+description: 以本人的飞书账号（网页登录态）操作飞书 IM：给人或群发消息、转发消息、查聊天记录和历史、搜人和群、下载附件，以及指挥本人的飞书数字人（lark-twin）去做事、安排定时提醒、查看它发过什么。用户要求"在飞书上给某人发消息""看看某个群最近在聊什么""让我的数字人去……""提醒我……"时使用。飞书文档、表格、日历请用官方 lark-cli，不用本 skill。
 ---
 
 # larkx：以本人身份操作飞书
@@ -55,6 +55,23 @@ EOF
 
 默认是普通发送：消息直接发到目标会话，对方看不到已读，但本人在那个会话的未读会清掉。本人想连未读也保住，可以在 lark-twin 的 `.env` 里打开 `LARKX_KEEP_UNREAD`（匿名发送：有未读时经本人私聊转发过去）。
 
+## 转发消息
+
+```bash
+larkx forward <msg_id> --to <chat_id> --json                                  # 转发一条
+larkx forward <msg_id> <msg_id> ... --to <chat_id> [--to <chat_id>] --json    # 逐条转发几条，按给的顺序；--to 可以写几个
+larkx forward <msg_id> <msg_id> ... --merge --to <chat_id> --json             # 合并转发：几条合成一条"聊天记录"发出
+```
+
+**转发前，要先和本人确认转哪几条、转给谁**，除非本人已经明确给出。转发和发消息一样，别人看到的发送者是本人。
+
+- `msg_id` 用 `larkx messages` / `larkx history` 里的数字 id，`chat_id` 用 `larkx chats` / `larkx search` 里的数字 id；`om_`、`oc_` 开头的开放平台 id 不能用。一次最多 50 条。
+- 成功时输出 `{"ok": true, "merge": false, "messages": [{"chat_id": ..., "msg_id": ..., "source_ids": [...]}], "failed": []}`。`msg_id` 是目标会话里新消息的 id，转错了可以用 `larkx recall <msg_id>` 撤回。有没转出去的时候退出码非零，原因写在 `failed` 里，补转时只转这几条。
+- 和发消息不同，转发不清掉本人的未读：目标会话里原有的未读还是未读，源消息的已读状态也不变，也不会让对方看到已读。
+- 消息原样照搬，图片、文件也能转；`@` 会变成普通文字，对方收不到提醒。
+- 合并转发只能合并同一个会话里的消息。卡片标题由飞书按源会话生成（群名，私聊是"A与B的会话"），不能自定义。
+- 转发记录在 `larkx audit` 里。
+
 ## 看聊天记录
 
 ```bash
@@ -77,8 +94,8 @@ EOF
 larkx task add --at "10-22 09:00" --every 1d -   # 周期任务，内容同样从 stdin 读
 larkx task list [--all] [--json]                  # 查看任务，--all 会包括已完成的
 larkx task cancel <id>
-larkx audit --limit 30                            # 通过 larkx 发出的所有消息，标明是本人还是数字人发的，以及是哪一轮
-larkx recall <msg_id>                             # 撤回一条消息（比如数字人误发的那条，msg_id 在 audit 里）
+larkx audit --limit 30                            # 通过 larkx 发出和转发的所有消息，标明是本人还是数字人发的，以及是哪一轮
+larkx recall <msg_id>                             # 撤回一条消息（比如数字人误发、误转的那条，msg_id 在 audit 里）
 ```
 
 ### 让数字人替你聊一段（接管会话）
