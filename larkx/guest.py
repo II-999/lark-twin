@@ -2,7 +2,8 @@
 
 本人自己的对话、本人在群里发起的 /ai 不受这里限制。两处使用:
 - Claude 后端的工具调用检查(agent/hooks.py): 只许单条 larkx 命令, 只能读写数字人自己的目录, 不能联网、不能开子 agent;
-- larkx CLI(cli.py): 不能列会话、搜人、查"谁找过我", 不能看别的会话, 不能动接管。
+- larkx CLI(cli.py): 不能列会话、搜人、查"谁找过我", 不能看别的会话, 不能动接管; 转发只能把当前会话里的消息
+  转到当前会话(要转的消息在哪个会话, 由 cmd_forward 查过服务端再拦)。
 按字符串匹配可以被刻意绕过, 这是减少误用和注入的防线, 不是安全隔离。
 """
 import os
@@ -12,7 +13,7 @@ import shlex
 from . import state
 
 # 访客发起的这一轮里允许用的 larkx 子命令; 其余一律拒绝
-GUEST_CLI_ALLOWED = {'send', 'recall', 'task', 'messages', 'history', 'download'}
+GUEST_CLI_ALLOWED = {'send', 'forward', 'recall', 'task', 'messages', 'history', 'download'}
 # 访客这一轮里完全禁止的工具: 联网、开子 agent
 GUEST_BLOCKED_TOOLS = {'WebFetch', 'WebSearch', 'Task', 'Agent'}
 READ_TOOLS = {'Read', 'Glob', 'Grep', 'LS'}
@@ -96,6 +97,8 @@ def cli_denied(cmd: str, args, turn, storage=None) -> str:
     current = turn.get('chat_id') or ''
     if cmd in ('messages', 'history') and str(getattr(args, 'chat_id', '')) != current:
         return '访客发起的请求只能查看当前会话的记录'
+    if cmd == 'forward' and any(str(t) != current for t in getattr(args, 'to', None) or []):
+        return '访客发起的请求只能转发到当前会话'
     if cmd == 'download':
         chat = getattr(args, 'chat', None)
         if not chat and storage is not None:

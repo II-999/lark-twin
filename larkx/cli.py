@@ -170,6 +170,11 @@ def _read_send_text(args) -> str:
     return ' '.join(args.text)
 
 
+# 对外发出消息的动作: 数字人的发送上限把它们合起来算, 发出去的消息都能撤回
+SENT_ACTIONS = ('send', 'forward')
+FORWARD_MAX = 50
+
+
 def _audit(st, action, args_chat, content, msg_id='', ok=True, error=''):
     turn = state.read_turn() if is_agent_actor() else None
     st.log_action(actor='agent' if is_agent_actor() else 'human', action=action, chat_id=str(args_chat or ''),
@@ -207,7 +212,7 @@ def cmd_send(args):
         denied = f'数字人的回复不能以触发前缀 {prefix} 开头' if prefix and strip_mentions(plain).startswith(prefix) else ''
         denied = denied or state.send_denied(args.chat_id, turn)
         if not denied:
-            n = st.count_actions('agent', 'send', datetime.now() - timedelta(minutes=10))
+            n = st.count_actions('agent', SENT_ACTIONS, datetime.now() - timedelta(minutes=10))
             if n >= cfg['send_rate_limit']:
                 denied = f'数字人 10 分钟内已经发了 {n} 条消息, 达到上限 {cfg["send_rate_limit"]}(LARKX_SEND_RATE_LIMIT)'
         if denied:
@@ -248,6 +253,113 @@ def cmd_send(args):
     else:
         print(f'已发送 msg_id={msg_id}')
     return 0
+
+
+def _forward_denied(st, cfg, sources: list, targets: list, turn, count: int, merge: bool) -> str:
+    """数字人这次转发是否越权, 规则和 larkx send 一样; 越权时返回原因, 允许时返回空串。count 是会发出的消息条数。"""
+    for t in targets:
+        denied = state.send_denied(t, turn)
+        if denied:
+            return denied
+    if state.is_guest(turn) and any(str(m['chat_id']) != turn['chat_id'] for m in sources):
+        return '访客发起的请求只能转发当前会话里的消息'
+    prefix = (cfg.get('triggers') or {}).get('prefix') or ''
+    if prefix and not merge:
+        # 逐条转发出去的消息内容不变, 和 send 一样不能以触发前缀开头(合并转发是一条"聊天记录", 不会触发)
+        from .daemon.triggers import strip_mentions
+        if any(strip_mentions(m['content']).startswith(prefix) for m in sources):
+            return f'数字人不能逐条转发以触发前缀 {prefix} 开头的消息'
+    n = st.count_actions('agent', SENT_ACTIONS, datetime.now() - timedelta(minutes=10))
+    if n + count > cfg['send_rate_limit']:
+        return (f'数字人 10 分钟内已经发了 {n} 条消息, 再转发 {count} 条会超过上限 {cfg["send_rate_limit"]}'
+                '(LARKX_SEND_RATE_LIMIT)')
+    return ''
+
+
+def _forward_text(group: list, found: dict, merge: bool) -> str:
+    """审计和抄送里记的内容: 转的是哪几条、各是什么。"""
+    lines = [f'{found[i]["content"] or ""}'.replace('\n', ' ')[:200] for i in group]
+    if merge:
+        return f'[合并转发 {len(group)} 条: {" ".join(group)}]\n' + '\n'.join(lines)
+    return f'[转发 {group[0]}] {lines[0]}'
+
+
+def cmd_forward(args):
+    ids = list(dict.fromkeys(str(i).strip() for i in args.msg_id))
+    targets = list(dict.fromkeys(str(t).strip() for t in args.to or []))
+    if not targets:
+        return _fail(args, '用 --to <chat_id> 指定转发到哪个会话, 可以写几个')
+    bad = [i for i in ids + targets if not i.isdigit()]
+    if bad:
+        return _fail(args, f'消息 id 和会话 id 都是数字(larkx messages / history 里的 msg_id, larkx chats 里的 chat_id), '
+                           f'这些不对: {" ".join(bad)}')
+    if len(ids) > FORWARD_MAX:
+        return _fail(args, f'一次最多转发 {FORWARD_MAX} 条')
+    merge = bool(getattr(args, 'merge', False))
+    cfg = load_config()
+    st = Storage()
+    agent = is_agent_actor()
+    turn = state.read_turn() if agent else None
+    client = LarkClient(LarkAuth())
+    try:
+        found = client.get_messages(ids)
+    except Exception as e:
+        return _fail(args, f'查询要转发的消息失败: {e}'[:300])
+    missing = [i for i in ids if i not in found or found[i].get('recalled')]
+    if missing:
+        return _fail(args, f'找不到这些消息(不存在、已撤回, 或者本人看不到): {" ".join(missing)}')
+    sources = [found[i] for i in ids]
+    if merge and len({str(m['chat_id']) for m in sources}) > 1:
+        return _fail(args, '合并转发的消息必须来自同一个会话; 不同会话的消息分开合并, 或者逐条转发')
+    groups = [ids] if merge else [[i] for i in ids]
+    if agent:
+        denied = _forward_denied(st, cfg, sources, targets, turn, len(groups) * len(targets), merge)
+        if denied:
+            names = '」「'.join(st.get_chat_name(t) or t for t in targets)
+            text = '\n'.join(_forward_text(g, found, merge) for g in groups)
+            _audit(st, 'forward', targets[0] if len(targets) == 1 else '', f'转发到 {" ".join(targets)}\n{text}',
+                   ok=False, error=denied)
+            from .notify import Notifier
+            Notifier(cfg, client).alert(f'拦下了数字人往「{names}」转发的 {len(ids)} 条消息: {denied}\n内容: {text[:200]}',
+                                        key=f'deny-forward:{targets[0]}:{denied[:20]}', cooldown=600)
+            return _fail(args, denied)
+    done, failed = [], []
+    for group in groups:
+        try:
+            got = client.merge_forward(group, targets) if merge else client.forward_message(group[0], targets)
+            error = '没有拿到目标会话里新消息的 id, 可能没有发出'
+        except Exception as e:
+            got, error = {}, f'转发失败: {e}'[:300]
+        text = _forward_text(group, found, merge)
+        for t in targets:
+            m = got.get(t)
+            _audit(st, 'forward', t, text, msg_id=m['msg_id'] if m else '', ok=bool(m), error='' if m else error)
+            if not m:
+                failed.append({'chat_id': t, 'source_ids': group, 'error': error})
+                continue
+            done.append({'chat_id': t, 'msg_id': m['msg_id'], 'source_ids': group})
+            # 先落库(不带 position), 监听收到回显时补全这条; 回显是登记过的转发, daemon 只入库, 不当成本人的指令
+            st.save_message(dict(m, position=0), sender_name='我', direction='out')
+    if agent and cfg.get('mirror') and done:
+        from .notify import Notifier, should_mirror
+        notifier = Notifier(cfg, client)
+        owner = notifier.owner_chat()
+        for t in targets:
+            sent = [d for d in done if d['chat_id'] == t]
+            if sent and should_mirror(t, turn, owner):
+                name = st.get_chat_name(t) or t
+                text = '\n'.join(_forward_text(d['source_ids'], found, merge) for d in sent)
+                n = len(ids) if merge else len(sent)
+                notifier.send(f'📤 数字人往「{name}」{"合并" if merge else ""}转发了 {n} 条消息:\n{text}', fallback=False)
+    if args.json:
+        _print_json({'ok': not failed, 'merge': merge, 'messages': done, 'failed': failed})
+    else:
+        for d in done:
+            what = f'已合并转发 {len(ids)} 条' if merge else f'已转发 {d["source_ids"][0]}'
+            print(f'{what} → {d["chat_id"]}: msg_id={d["msg_id"]}')
+        for f in failed:
+            print(f'没有转发出去 {" ".join(f["source_ids"])} → {f["chat_id"]}: {f["error"]}', file=sys.stderr)
+    return 1 if failed else 0
 
 
 def cmd_config(args):
@@ -437,10 +549,10 @@ def _task_row(t) -> dict:
 
 def cmd_recall(args):
     st = Storage()
-    sent = st.find_action('agent', 'send', args.msg_id) or st.find_action('human', 'send', args.msg_id)
+    sent = st.find_action('agent', SENT_ACTIONS, args.msg_id) or st.find_action('human', SENT_ACTIONS, args.msg_id)
     if is_agent_actor():
         turn = state.read_turn()
-        mine = st.find_action('agent', 'send', args.msg_id)
+        mine = st.find_action('agent', SENT_ACTIONS, args.msg_id)
         if not mine:
             return _fail(args, '数字人只能撤回自己发出的消息')
         if not turn or turn['kind'] == 'system' or (not turn['is_owner'] and mine.chat_id != turn['chat_id']):
@@ -885,6 +997,13 @@ def main():
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_send)
     p.add_argument('--mention', action='append', default=[], metavar='USER_ID:NAME', help='真实 @对象，可重复')
+    p = sub.add_parser('forward', help='转发消息: 逐条转发到一个或几个会话, 或者 --merge 合并成一条聊天记录转发')
+    p.add_argument('msg_id', nargs='+', help='要转发的消息 id(larkx messages / history 里的 msg_id), 可以写几个, 按顺序转发')
+    p.add_argument('--to', action='append', required=True, metavar='CHAT_ID', help='转发到哪个会话, 可重复')
+    p.add_argument('--merge', action='store_true',
+                   help='合并转发: 几条消息合成一条"聊天记录"发出, 只能是同一个会话里的消息; 标题由飞书按源会话生成, 不能自定义')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_forward)
     p = sub.add_parser('config', help='查看生效中的配置(配置项写在 .env 里)')
     p.set_defaults(fn=cmd_config)
     p = sub.add_parser('chats', help='列出本地会话')

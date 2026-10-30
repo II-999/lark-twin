@@ -219,18 +219,23 @@ class Storage:
         finally:
             s.close()
 
-    def count_actions(self, actor: str, action: str, since: datetime) -> int:
+    def count_actions(self, actor: str, action, since: datetime) -> int:
+        """action 可以是一个动作名, 也可以是几个(如 ('send', 'forward'), 发消息和转发合起来算)。"""
+        actions = (action,) if isinstance(action, str) else tuple(action)
         s = self.Session()
         try:
-            return s.query(Action).filter(Action.actor == actor, Action.action == action, Action.ok == 1,
+            return s.query(Action).filter(Action.actor == actor, Action.action.in_(actions), Action.ok == 1,
                                           Action.created_at >= since).count()
         finally:
             s.close()
 
-    def find_action(self, actor: str, action: str, msg_id: str):
+    def find_action(self, actor: str, action, msg_id: str):
+        """action 同 count_actions。"""
+        actions = (action,) if isinstance(action, str) else tuple(action)
         s = self.Session()
         try:
-            return s.query(Action).filter_by(actor=actor, action=action, msg_id=str(msg_id), ok=1).first()
+            return s.query(Action).filter(Action.actor == actor, Action.action.in_(actions), Action.msg_id == str(msg_id),
+                                          Action.ok == 1).first()
         finally:
             s.close()
 

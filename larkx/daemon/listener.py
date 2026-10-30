@@ -60,6 +60,11 @@ class Listener:
         logger.info(line)
         if self.cfg.get('mark_read') and not is_own and msg.get('position'):
             await asyncio.to_thread(client.mark_read, chat_id, msg['position'], [msg['msg_id']])
+        if state.is_forward(msg):
+            # larkx forward 转发出去的那份: 发送人是本人, 内容却是转来的(多半是别人说的话), 只入库, 不交给 daemon,
+            # 内容以触发前缀开头时也不会当成本人下的指令
+            logger.info(f'本人用 larkx forward 转发的消息 {msg.get("msg_id")} 只入库, 不当成本人的指令')
+            return True
         if self.on_stored:
             await self.on_stored(msg, chat_name, sender_name)
         return True

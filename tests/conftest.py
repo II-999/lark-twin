@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 
@@ -9,6 +11,7 @@ def _isolate_local_state(monkeypatch, tmp_path):
     monkeypatch.setattr(state, 'STATE_DIR', tmp_path / 'state')
     monkeypatch.setattr(state, 'TURN_PATH', tmp_path / 'state' / 'turn.json')
     monkeypatch.setattr(state, 'RELAY_DIR', tmp_path / 'state' / 'relay')
+    monkeypatch.setattr(state, 'FORWARD_DIR', tmp_path / 'state' / 'forward')
     monkeypatch.setattr(notify, 'NOTIFY_STATE', tmp_path / 'state' / 'notify.json')
     monkeypatch.setattr(daemon, 'DAEMON_STATE', tmp_path / 'state' / 'daemon.json')
     # 本机 .env 里可能改过没权限回复的文字, 测试一律从代码默认值出发
@@ -29,6 +32,9 @@ class FakeClient:
         self.people = []      # search 返回的结果(和 LarkClient.search 的格式一样)
         self.user_names = {}  # get_user_name 能查到的人
         self.searches = []
+        self.messages = {}    # get_messages 能查到的消息 {msg_id: 消息}
+        self.forwards = []    # forward_message / merge_forward 的调用: (种类, 源消息 id, 目标会话)
+        self.forward_error = {}  # 转发这条源消息时抛的异常 {msg_id: 异常}
 
     def send_msg(self, text, chat_id, root_id=None, keep_unread=False):
         self.sent.append((chat_id, text))
@@ -58,6 +64,25 @@ class FakeClient:
     def api(self, type_or_cmd, data=None):
         self.api_calls.append((type_or_cmd, data))
         return {'message': 'ok'}
+
+    def get_messages(self, message_ids):
+        return {str(i): self.messages[str(i)] for i in message_ids if str(i) in self.messages}
+
+    def forward_message(self, msg_id, chat_ids, mark=True):
+        return self._forward('forward', [msg_id], chat_ids)
+
+    def merge_forward(self, msg_ids, chat_ids, mark=True):
+        return self._forward('merge', msg_ids, chat_ids)
+
+    def _forward(self, kind, msg_ids, chat_ids):
+        msg_ids, chat_ids = [str(m) for m in msg_ids], [str(c) for c in chat_ids]
+        self.forwards.append((kind, msg_ids, chat_ids))
+        if msg_ids[0] in self.forward_error:
+            raise self.forward_error[msg_ids[0]]
+        n = len(self.forwards)
+        return {c: {'msg_id': f'f{n}-{c}', 'chat_id': c, 'chat_type': 1, 'from_id': self.auth.user_id, 'msg_type': 4,
+                    'msg_type_name': 'TEXT', 'content': self.messages.get(msg_ids[0], {}).get('content', ''),
+                    'position': 9, 'cid': f'cid{n}', 'create_time': int(time.time())} for c in chat_ids}
 
 
 @pytest.fixture

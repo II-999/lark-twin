@@ -5,6 +5,9 @@ daemon 每轮开始前写入 turn.json, 结束后删除。数字人调用 larkx 
 
 relay/ 下登记经本人私聊中转的消息(匿名发送, 默认关, 打开 LARKX_KEEP_UNREAD 才有; 见 LarkClient.send_msg 的
 keep_unread), daemon 收到它们时跳过。
+
+forward/ 下登记 larkx forward 转发出去的消息(每个目标会话那份的 cid, 见 LarkClient.forward_message), daemon 收到它们时
+只入库, 不当成本人下的指令: 发送人是本人, 内容却是转来的, 以触发前缀开头时不能当成本人在叫数字人。
 """
 import json
 import os
@@ -17,7 +20,8 @@ from .config import DATA_DIR
 STATE_DIR = DATA_DIR / 'state'
 TURN_PATH = STATE_DIR / 'turn.json'
 RELAY_DIR = STATE_DIR / 'relay'
-# 补收漏推消息只看 7 天内有动静的会话, 登记留得比它久, 中转消息无论什么时候补收到都认得出来
+FORWARD_DIR = STATE_DIR / 'forward'
+# 补收漏推消息只看 7 天内有动静的会话, 登记留得比它久, 中转、转发的消息无论什么时候补收到都认得出来
 RELAY_TTL = 8 * 86400
 KINDS = ('message', 'task', 'say', 'system')
 
@@ -47,28 +51,47 @@ def read_turn():
     return data
 
 
-def mark_relay(cid: str, chat_id: str):
-    """发中转消息前登记它的 cid: 每条一个文件(内容是中转会话 id), 多个进程同时写也不会互相覆盖。顺带清掉过期的。"""
-    RELAY_DIR.mkdir(parents=True, exist_ok=True)
+def _mark(folder, cid: str, chat_id: str):
+    """登记一条消息的 cid: 每条一个文件(内容是它所在的会话 id), 多个进程同时写也不会互相覆盖。顺带清掉过期的。"""
+    folder.mkdir(parents=True, exist_ok=True)
     now = time.time()
-    for p in RELAY_DIR.iterdir():
+    for p in folder.iterdir():
         try:
             if now - p.stat().st_mtime > RELAY_TTL:
                 p.unlink()
         except FileNotFoundError:
             pass
-    (RELAY_DIR / cid).write_text(str(chat_id), encoding='utf-8')
+    (folder / cid).write_text(str(chat_id), encoding='utf-8')
 
 
-def is_relay(msg: dict) -> bool:
-    """这条消息是不是登记过的中转消息(cid 和所在会话都对得上); 转发到目标会话的那份 cid 不同, 不算。"""
+def _marked(folder, msg: dict) -> bool:
     cid = str(msg.get('cid') or '')
     if not re.fullmatch(r'[\w-]{1,128}', cid):
         return False
     try:
-        return (RELAY_DIR / cid).read_text(encoding='utf-8') == str(msg.get('chat_id'))
+        return (folder / cid).read_text(encoding='utf-8') == str(msg.get('chat_id'))
     except (FileNotFoundError, NotADirectoryError):
         return False
+
+
+def mark_relay(cid: str, chat_id: str):
+    """发中转消息前登记它的 cid。"""
+    _mark(RELAY_DIR, cid, chat_id)
+
+
+def is_relay(msg: dict) -> bool:
+    """这条消息是不是登记过的中转消息(cid 和所在会话都对得上); 转发到目标会话的那份 cid 不同, 不算。"""
+    return _marked(RELAY_DIR, msg)
+
+
+def mark_forward(cid: str, chat_id: str):
+    """larkx forward 发出前登记目标会话 chat_id 里那份的 cid。"""
+    _mark(FORWARD_DIR, cid, chat_id)
+
+
+def is_forward(msg: dict) -> bool:
+    """这条消息是不是 larkx forward 转发出去的(cid 和所在会话都对得上)。"""
+    return _marked(FORWARD_DIR, msg)
 
 
 def is_guest(turn) -> bool:
