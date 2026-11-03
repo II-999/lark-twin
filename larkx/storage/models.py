@@ -230,6 +230,14 @@ class WhitelistEntry(Base):
     added_at = Column(DateTime, default=datetime.now)
 
 
+class Setting(Base):
+    """网页控制台上改的设置(值是 JSON)。daemon 每次用到时现查, 改了立即生效; 只有本人能改, 数字人改不了。"""
+    __tablename__ = 'settings'
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, default='')
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class EventRule(Base):
     """Owner-authored subscription; executions use the existing Task model."""
     __tablename__ = 'event_rules'

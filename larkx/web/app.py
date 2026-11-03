@@ -23,7 +23,7 @@ from .. import service, state
 from .. import whitelist as wl
 from ..agent.home import commit_agent_home
 from ..config import DATA_DIR, load_config
-from ..storage import Storage
+from ..storage import ACK_REACTION, Storage
 from ..storage.models import Action, InboxItem, Message
 
 STATIC = Path(__file__).parent / 'static'
@@ -130,7 +130,7 @@ def _hourly(st: Storage, hours: int = 24) -> list:
         for (ts,) in s.query(InboxItem.created_at).filter(InboxItem.created_at >= start):
             buckets[ts.replace(minute=0, second=0, microsecond=0)][0] += 1
         for (ts,) in s.query(Action.created_at).filter(Action.created_at >= start, Action.actor == 'agent',
-                                                       Action.action == 'send', Action.ok == 1):
+                                                       Action.action.in_(('send', 'forward')), Action.ok == 1):
             buckets[ts.replace(minute=0, second=0, microsecond=0)][1] += 1
     finally:
         s.close()
@@ -186,7 +186,7 @@ def overview(request: Request):
                     'last_active': sess.last_active if sess else None},
         'turn': turn and dict(turn, elapsed=time.time() - turn['started_at']),
         'inbox_pending': inbox_pending,
-        'today': {'handled': handled_today, 'sent': st.count_actions('agent', 'send', today), 'denied': denied_today,
+        'today': {'handled': handled_today, 'sent': st.count_actions('agent', ('send', 'forward'), today), 'denied': denied_today,
                   'messages': messages_today},
         'tasks_pending': len([t for t in st.list_tasks() if t.status == 'pending']),
         'takeovers': [{'chat_id': t.chat_id, 'until': t.until, 'goal': t.goal} for t in st.takeover_list() if t.until > time.time()],
@@ -202,7 +202,7 @@ def activity(request: Request):
     names = _chat_names(st)
     rows = st.list_actions(limit=int(request.query_params.get('limit', 100)))
     rows.reverse()
-    sends = ('send', 'deny_reply')
+    sends = ('send', 'forward', 'deny_reply')
     recalled = st.recalled_ids(r.msg_id for r in rows if r.action in sends)
     return _json([{'id': r.id, 'time': r.created_at, 'actor': r.actor, 'action': r.action, 'chat_id': r.chat_id,
                    'chat_name': names.get(r.chat_id, ''), 'msg_id': r.msg_id, 'content': r.content, 'ok': bool(r.ok),
@@ -229,7 +229,7 @@ def conversations(request: Request):
                     'body': p.get('body', ''), 'takeover': bool(p.get('note') and '接管' in p.get('note', '')),
                     'content': m.get('content', ''), 'replies': []})
     by_ref = {c['msg_id']: c for c in out}
-    sends = [a for a in st.actions_for_turns(list(by_ref)) if a.action == 'send']
+    sends = [a for a in st.actions_for_turns(list(by_ref)) if a.action in ('send', 'forward')]
     recalled = st.recalled_ids(a.msg_id for a in sends)
     for a in sends:
         by_ref[a.turn_ref]['replies'].append({'time': a.created_at, 'chat_id': a.chat_id, 'chat_name': names.get(a.chat_id, ''),
@@ -523,6 +523,38 @@ def people(request: Request):
                                               is_owner=p['user_id'] == me) for p in found]})
 
 
+# ---- 设置 ----
+# 存在库里(settings 表), daemon 每条消息现查, 改了下一条就生效, 不用重启。数字人没有网页令牌, 存储层也拦着它
+
+ACK_SCOPE_TEXT = {'owner': '只对本人自己发的 /ai 消息', 'all': '所有触发数字人的消息'}
+
+
+def _settings_state(st: Storage) -> dict:
+    # inbox_max_age: 超过这个秒数的旧消息不交给数字人, 也不加表情(页面上的说明用)
+    return {'ack_reaction': dict(st.ack_reaction(), reaction=ACK_REACTION), 'inbox_max_age': load_config()['inbox_max_age']}
+
+
+@api
+def settings(request: Request):
+    st = Storage()
+    if request.method == 'PUT':
+        b = request.state.body
+        unknown = sorted(set(b) - {'ack_reaction'})
+        if unknown or not b:
+            raise ValueError(f'不认识的设置: {", ".join(unknown)}' if unknown else '没有要改的设置')
+        ack = b['ack_reaction']
+        if not isinstance(ack, dict) or not ack or set(ack) - {'enabled', 'scope'}:
+            raise ValueError('ack_reaction 只能改 enabled、scope')
+        before = st.ack_reaction()
+        after = st.set_ack_reaction(ack.get('enabled'), ack.get('scope'))
+        if after != before:
+            st.log_action(actor='human', action='setting',
+                          content=f'网页设置: 触发时先回 {ACK_REACTION} 表情{"打开" if after["enabled"] else "关闭"}, '
+                                  f'范围: {ACK_SCOPE_TEXT[after["scope"]]}')
+        return _json(dict(_settings_state(st), ok=True))
+    return _json(_settings_state(st))
+
+
 def _agent_home() -> Path:
     return Path(load_config()['agent_home'])
 
@@ -655,7 +687,7 @@ def recall(request: Request):
     if not msg_id.isdigit():
         raise ValueError('msg_id 不合法')
     st = Storage()
-    sent = (st.find_action('agent', 'send', msg_id) or st.find_action('human', 'send', msg_id)
+    sent = (st.find_action('agent', ('send', 'forward'), msg_id) or st.find_action('human', ('send', 'forward'), msg_id)
             or st.find_action('daemon', 'deny_reply', msg_id))
     try:
         LarkClient(LarkAuth()).api('messages.DeleteMessageRequest', {'id': msg_id})
@@ -723,6 +755,7 @@ def create_app() -> Starlette:
         Route('/api/whitelist', whitelist, methods=['GET', 'POST']),
         Route('/api/whitelist/{user_id}', whitelist_item, methods=['DELETE']),
         Route('/api/people', people),
+        Route('/api/settings', settings, methods=['GET', 'PUT']),
         Route('/api/memory', memory), Route('/api/memory/{name:path}', memory_item, methods=['PUT', 'DELETE']),
         Route('/api/persona', persona, methods=['GET', 'PUT']),
         Route('/api/history', history), Route('/api/history/{sha}', history_item),

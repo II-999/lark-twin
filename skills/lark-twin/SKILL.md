@@ -125,6 +125,7 @@ uv venv && uv pip install -e .
 | 整理方案 | `.venv/bin/larkx organize show` 看最新一份，`apply <编号> --items 1-5`、`reject`、`undo` 执行、放弃、撤销；网页"整理"页 |
 | 清理旧数据 | 每天自动按关注度清理；手动 `.venv/bin/larkx prune --dry-run` 先看会删多少 |
 | 管理谁能唤起数字人 | `.venv/bin/larkx whitelist list` / `add <名字或 user_id>` / `remove <名字或 user_id>`，或者网页控制台的"白名单"页。白名单非空时只有本人和名单里的人能唤起，为空时看 `LARKX_TRIGGER_OWNER_ONLY`。改动立即生效，不用重启。加人前和用户确认是哪一个（同名的看部门和 user_id）。没权限的人想唤起时会自动收到 `LARKX_DENY_REPLY`（`whitelist list` 第二行有说明） |
+| 触发时先回一个 👌 表情 | 网页控制台的"设置"页，默认关，改了立即生效。打开前告诉用户：加表情会把那条消息标成已读，对方能看到已读回执，删掉表情也撤不回；范围默认只对本人自己发的 `/ai`（实测不影响别人消息的已读），选"所有触发数字人的消息"时白名单里的人唤起的那条也会变成已读。日志里搜 `[表情回复]`，`larkx audit` 里是 `ack_reaction` |
 
 数字人的人设和行为准则在 `~/.larkx/agent/CLAUDE.md`，长期记忆在 `~/.larkx/agent/memory/`，两处都可以直接修改。这个目录是一个 git 仓库，每轮的变化都会自动提交，改坏了可以用 git 回退。修改人设后，新会话一定会读到新内容：用户在飞书发 `/ai /clear` 即可开新会话，长期记忆会保留。`/ai /stop` 用来打断当前任务。这两个命令只有用户本人发才生效。
 

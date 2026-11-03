@@ -113,6 +113,7 @@ def _daemon(tmp_path, fake_client, monkeypatch):
     obj.inbox = asyncio.Queue()
     from larkx.daemon.maintenance import Maintenance
     obj.maintenance = Maintenance(obj)
+    obj._ack_tasks = set()
     monkeypatch.setattr(d, 'commit_agent_home', lambda *a: False)
     return obj
 

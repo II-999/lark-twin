@@ -447,13 +447,10 @@ class LarkClient:
             return None
         msg_id = ''
         try:
-            resp = self.api('messages.PutTransmitMessageRequest',
-                            {'chatIds': [chat_id], 'messageId': relay_id, 'cids': {chat_id: generate_request_cid()}}) or {}
-            msg_id = str((((resp.get('messages') or {}).get(chat_id)) or {}).get('id') or '')
+            # 中转过去的这份就是这次要发的消息, 不登记成 larkx forward 的转发
+            msg_id = (self.forward_message(relay_id, [chat_id], mark=False).get(chat_id) or {}).get('msg_id') or ''
         except Exception as e:
             logger.error(f'转发到会话 {chat_id} 失败: {e}')
-        if msg_id.startswith('-'):
-            msg_id = ''
         if not msg_id:
             logger.error(f'转发到会话 {chat_id} 没有拿到有效的消息 id, 消息没有发出')
         try:
@@ -461,6 +458,94 @@ class LarkClient:
         except Exception as e:
             logger.warning(f'撤回本人私聊里的中转消息 {relay_id} 失败: {e}')
         return msg_id or None
+
+    def forward_message(self, msg_id: str, chat_ids, mark: bool=True) -> dict:
+        """把一条消息原样转发到 chat_ids 这几个会话(messages.PutTransmitMessageRequest, 一次请求发往全部目标)。
+        返回 {chat_id: 目标会话里的新消息}(格式同 get_messages), 没发出的会话不在里面; 请求失败时抛异常。
+
+        实测(2026-10-31): 目标会话里本人原有的未读还是未读(已读位置不动), 源消息对本人的已读状态不变, 不给任何人的
+        消息产生已读回执; 新消息的发送人是本人, originalSenderId 是原消息的发送人, cid 是这里给的。图片、文件也能转,
+        @ 会变成普通文字(见 _send_via_relay)。
+        逐条转发几条消息也是一条条调这个: BatchCopyMessagesRequest(逐条转发)实测也不动已读, 但响应里没有新消息的 id,
+        请求里给的 cid 也不用, 拿不到新消息, 也没法登记给 daemon 认。
+        mark: 发出前登记每个目标会话那份的 cid(state.mark_forward), daemon 收到时只入库, 不当成本人下的指令。
+        匿名发送(_send_via_relay)转过去的那份就是本人或数字人要发的消息, 不登记。
+        """
+        chat_ids = [str(c) for c in chat_ids]
+        cids = {c: generate_request_cid() for c in chat_ids}
+        if mark:
+            for c, cid in cids.items():
+                state.mark_forward(cid, c)
+        resp = self.api('messages.PutTransmitMessageRequest', {'chatIds': chat_ids, 'messageId': str(msg_id), 'cids': cids})
+        return self._forwarded(resp, chat_ids)
+
+    def merge_forward(self, msg_ids, chat_ids, mark: bool=True) -> dict:
+        """合并转发(messages.PutMergeForwardMessageRequest): msg_ids 这几条(同一个会话里的)合成一条"聊天记录"消息,
+        发到 chat_ids 的每个会话。返回值、异常和 mark 同 forward_message。
+
+        实测(2026-10-31): 和 forward_message 一样不动已读, 新消息带着这里给的 cid。卡片标题是服务端按源会话生成的
+        (群名, 私聊是"A与B的会话"), 请求里没有自定义标题的字段。
+        """
+        chat_ids = [str(c) for c in chat_ids]
+        cids = {c: generate_request_cid() for c in chat_ids}
+        if mark:
+            for c, cid in cids.items():
+                state.mark_forward(cid, c)
+        resp = self.api('messages.PutMergeForwardMessageRequest',
+                        {'messageIds': [str(m) for m in msg_ids], 'toChatIds': chat_ids, 'cids': cids, 'type': 'MESSAGE',
+                         'locale': self.auth.region.locale})
+        return self._forwarded(resp, chat_ids)
+
+    def _forwarded(self, resp, chat_ids) -> dict:
+        """转发请求的响应里每个目标会话的新消息。话题群的放在 threadMessages 里(没实测过, 按字段的意思取)。"""
+        resp = resp or {}
+        got = {str(k): v for k, v in (resp.get('messages') or {}).items()}
+        for info in (resp.get('threadMessages') or {}).values():
+            if info and not info.get('failed') and info.get('message'):
+                got.setdefault(str(info.get('chatId') or info['message'].get('chatId') or ''), info['message'])
+        out = {}
+        for c in chat_ids:
+            v = got.get(c) or {}
+            msg_id = str(v.get('id') or '')
+            if msg_id and not msg_id.startswith('-'):
+                out[c] = self._message_dict(v, c, False, 0)
+        return out
+
+    def add_reaction(self, msg_id: str, reaction_type: str = 'OK') -> int:
+        """以本人身份在一条消息上加一个表情回复(reactions.PutReactionRequest)。reaction_type 是飞书的表情 key, 如 OK(👌)、
+        THUMBSUP(👍)、DONE(✅), 全部 key 用 reactions.PullEmojiResourcesByEmojiKeysRequest 查。
+        返回这条消息上这种表情的个数; 请求失败、服务端拒绝时抛异常。同一个人重复加同一种表情不会多出一个。
+
+        注意, 加在别人的消息上会标已读。实测(2026-11-03, 机器人私聊 7690645243804273642, 不开长连接):
+        - 别人的消息: 那一条马上变成已读(PullMessageMeReadStateRequest False → True, 发消息的人能看到已读回执),
+          删掉表情也撤不回。本人的已读位置: 机器人连发 A、B 后在 A 上加, 一次约 2 秒后推到了会话最新(B 也成了已读,
+          对方能看到); 另两次(其中一次前提和它完全一样)等了 20 秒都没动, A 前后没读的消息也都还是未读。推到最新那次
+          可能是飞书客户端同时打开了会话, 但不能排除是加表情引起的。
+        - 本人自己的消息: 什么都不变, 本人的已读位置不动, 会话里别人的消息(之前没读的、之后新发的)都还是未读。
+        所以 daemon 的"触发时先回一个表情"默认关, 打开后范围默认只对本人自己发的 /ai。
+        """
+        return self._reaction('reactions.PutReactionRequest', msg_id, reaction_type)
+
+    def delete_reaction(self, msg_id: str, reaction_type: str = 'OK') -> int:
+        """撤掉本人在这条消息上的这种表情回复(reactions.DeleteReactionRequest), 返回剩下的个数; 失败时抛异常。"""
+        return self._reaction('reactions.DeleteReactionRequest', msg_id, reaction_type)
+
+    def _reaction(self, req: str, msg_id: str, reaction_type: str) -> int:
+        # 消息不存在、表情 key 不对时网关回 HTTP 400, _gateway_post 抛异常
+        resp = self.api(req, {'messageId': str(msg_id), 'reactionType': str(reaction_type)}) or {}
+        return int(resp.get('count') or 0)
+
+    def get_messages(self, message_ids) -> dict:
+        """按 id 只读地取消息(messages.PullMessagesByIdsRequest, 不改变已读状态), {msg_id: 消息}, 格式同 pull_history;
+        取不到的(不存在、本人看不到)不在里面。"""
+        ids = [str(m) for m in message_ids if m]
+        out = {}
+        for i in range(0, len(ids), 50):
+            r = self.api('messages.PullMessagesByIdsRequest', {'messageIds': ids[i:i + 50]}) or {}
+            for v in (r.get('messages') or {}).values():
+                if str(v.get('id')) in ids:
+                    out[str(v['id'])] = self._message_dict(v, v.get('chatId') or '', False, 0)
+        return out
 
     def read_state(self, chat_id: str):
         """(本人已读到的 position, 会话最新 position)。"""
