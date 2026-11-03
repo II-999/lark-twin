@@ -11,7 +11,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from .. import groups, jobs
+from .. import groups, jobs, retention
 from .prompts import BUILDERS
 from .triggers import build_system_prompt
 
@@ -101,6 +101,12 @@ class Maintenance:
             st['new_chats'] = sorted(set(st.get('new_chats', [])) | set(res['new']))
             self.store.put_state('profile', st)
         return f"{res['chats']} 个会话; 新会话 {len(res['new'])} 个; 建议有变化 {res['changed']} 个"
+
+    def _job_prune(self, run) -> str:
+        st = self.store.get_state('prune')
+        res = retention.run(self.d.cfg, self.d.storage, state=st)
+        self.store.put_state('prune', st)
+        return retention.summary(res)
 
     def _failed(self, run, err: str):
         self.store.fail(run.id, err)

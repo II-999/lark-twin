@@ -11,7 +11,7 @@ from .storage import Storage
 
 # 数字人(LARKX_ACTOR=agent)不能用的子命令: 原始网关接口、登录凭证、再起一个监听进程、管理自己的服务、
 # 以本人身份给自己下指令(say)、改本机 agent 的 skill
-AGENT_FORBIDDEN = {'api', 'auth', 'listen', 'daemon', 'service', 'doctor', 'say', 'skill', 'web'}
+AGENT_FORBIDDEN = {'api', 'auth', 'listen', 'daemon', 'service', 'doctor', 'say', 'skill', 'web', 'prune'}
 
 
 def _print_json(obj):
@@ -844,6 +844,36 @@ def cmd_jobs(args):
     return 0
 
 
+def cmd_prune(args):
+    """清理旧数据: 不带 --days 时按关注度和保留期清理消息、整理旧记录; 带 --days 时只清 --chat 指定的会话。数字人不能用。"""
+    from . import groups, jobs, retention
+    st = Storage()
+    if args.days is None:
+        if args.chat:
+            return _fail(args, '--chat 要和 --days 一起用')
+        store = jobs.JobStore(st)
+        vac = store.get_state('prune')
+        res = retention.run(load_config(), st, dry_run=args.dry_run, state=vac)
+        if not args.dry_run:
+            store.put_state('prune', vac)
+        text = retention.summary(res, args.dry_run)
+    else:
+        if args.days <= 0:
+            return _fail(args, '--days 必须大于 0')
+        if not args.chat:
+            return _fail(args, '指定 --days 时要用 --chat <会话名或 chat_id> 说明清哪个会话; 不指定时按关注度清理')
+        ids = _resolve_chats(args, groups.ChatStore(st), args.chat)
+        if ids is None:
+            return 1
+        n = st.prune_messages(time.time() - args.days * retention.DAY, ids, dry_run=args.dry_run)
+        res, text = {'total': n}, f"{len(ids)} 个会话 {args.days} 天前的消息: {'会删' if args.dry_run else '删'} {n} 条"
+    if args.json:
+        _print_json({'ok': True, 'dry_run': args.dry_run, **{k: v for k, v in res.items()}, 'summary': text})
+    else:
+        print(text)
+    return 0
+
+
 def cmd_audit(args):
     rows = Storage().list_actions(limit=args.limit)
     if args.json:
@@ -1215,6 +1245,12 @@ def main():
     p.add_argument('--preview', action='store_true', help='run: 只打印交给数字人的提示词, 不运行')
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_jobs)
+    p = sub.add_parser('prune', help='清理旧数据: 默认按关注度和保留期, 也可以 --days N --chat 会话 单独清; 数字人不能用')
+    p.add_argument('--days', type=int, help='只保留最近多少天(要配合 --chat)')
+    p.add_argument('--chat', action='append', default=[], help='会话名或 chat_id, 可重复')
+    p.add_argument('--dry-run', action='store_true', help='只统计会删多少, 不删')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_prune)
     p = sub.add_parser('audit', help='查看通过 larkx 对外做过的动作(发消息等)')
     p.add_argument('--limit', type=int, default=50)
     p.add_argument('--json', action='store_true')

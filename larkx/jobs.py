@@ -46,10 +46,17 @@ def _before_review(cfg):
     return ((hour - 1) % 24 if 0 <= hour <= 23 else 3, 30, None)
 
 
+def _after_review(cfg):
+    """回顾后半小时清理; 关掉回顾时按 4:30。"""
+    hour = cfg.get('memory_review_hour', -1)
+    return (hour if 0 <= hour <= 23 else 4, 30, None)
+
+
 JOBS = [
     Job('profile', '会话画像', 'local', _before_review),
     Job('review', '每日回顾', 'agent', _review_at),
     Job('consolidate', '每周整理记忆', 'agent', _consolidate_at),
+    Job('prune', '清理旧数据', 'local', _after_review),
 ]
 
 
