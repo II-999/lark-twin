@@ -23,6 +23,13 @@ BOOTSTRAP_PROMPT = ('初始化记忆(第 {i}/{n} 批)。刚从飞书回填了本
                     '写清楚谁、做什么、什么时候)。只记稳定有用的事实, 每条写上日期; 已有同主题的文件就合并更新, 不要重复新建; '
                     '更新 memory/MEMORY.md 索引。{last}')
 BOOTSTRAP_LAST = '这是最后一批: 最后通读一遍 memory/, 把重复的合并, 索引整理好。'
+BRIEFING_PROMPT = ('写今天的工作简报, 发到本人私聊。下面是代码算好的数据(都是事实, 别编造):\n\n{data}\n\n'
+                   '要求: markdown, 一条消息, 25 行以内, 先写结论。顺序: ① 今天要你处理的(找你还没回的、你标记的、'
+                   '到期的提醒, 再结合 memory/ 里 事-*.md 的待跟进); ② 重点关注的会话进展, 每个一两句, 需要时用 '
+                   'larkx messages <chat_id> --since {since} 看; ③ 简单关注和免打扰的群里和本人有关的; ④ 提醒。{weekly}'
+                   '没什么可报的也发一句"今天没有需要你处理的事"。发现某个会话分组明显不合适, 可以在末尾建议'
+                   '(如: 「xx群」消息多但和你无关, 建议设为只存不看)。')
+BRIEFING_WEEKLY = '今天是周一, 末尾加「上周回顾 / 本周关注」两三条。'
 # 维护任务的共同结尾: 不对外发消息, 最后一句话总结存进运行记录
 MAINTENANCE_TAIL = ' 不要发飞书消息。最后用一两句话说明这次记了或改了什么(会存进运行记录)。'
 
@@ -39,7 +46,7 @@ def chat_line(r: dict) -> str:
     return f"- [{'/'.join(tags)}] {r['name'] or '(未命名)'} ({r['chat_id']}){group}: {', '.join(parts)}"
 
 
-def review(cfg: dict, storage, now, owner_id: str = '') -> str:
+def review(cfg: dict, storage, now, owner_id: str = '', **kw) -> str:
     from .. import groups
     rows = groups.activity(storage, owner_id, int(now.timestamp() - 86400))
     shown = [r for r in rows if r['attention'] != 'archive']
@@ -50,11 +57,11 @@ def review(cfg: dict, storage, now, owner_id: str = '') -> str:
     return REVIEW_PROMPT.format(chats=chats) + MAINTENANCE_TAIL
 
 
-def consolidate(cfg: dict, storage, now, owner_id: str = '') -> str:
+def consolidate(cfg: dict, storage, now, owner_id: str = '', **kw) -> str:
     return CONSOLIDATE_PROMPT + MAINTENANCE_TAIL
 
 
-def bootstrap(cfg: dict, storage, now, owner_id: str = '') -> str:
+def bootstrap(cfg: dict, storage, now, owner_id: str = '', **kw) -> str:
     from .. import groups, jobs
     from .maintenance import BOOTSTRAP_BATCH, bootstrap_chats
     st = jobs.JobStore(storage).get_state('bootstrap')
@@ -71,4 +78,11 @@ def bootstrap(cfg: dict, storage, now, owner_id: str = '') -> str:
                                    last=BOOTSTRAP_LAST if i == n - 1 else '') + MAINTENANCE_TAIL
 
 
-BUILDERS = {'review': review, 'consolidate': consolidate, 'bootstrap': bootstrap}
+def briefing(cfg: dict, storage, now, owner_id: str = '', client=None, **kw) -> str:
+    from .. import digest
+    data = digest.briefing_data(storage, owner_id, now, client=client)
+    return BRIEFING_PROMPT.format(data=digest.render(data), since='7d' if data['weekly'] else '24h',
+                                  weekly=BRIEFING_WEEKLY if data['weekly'] else '')
+
+
+BUILDERS = {'review': review, 'consolidate': consolidate, 'bootstrap': bootstrap, 'briefing': briefing}

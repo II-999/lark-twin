@@ -187,6 +187,21 @@ def check_backfill(cfg, storage=None):
     return _check('历史回填', OK, f'已完成: {progress}; {memo}')
 
 
+def check_briefing(cfg):
+    """每日简报: 时间格式对不对, 找不找得到本人私聊。"""
+    from . import jobs, notify
+    try:
+        t = jobs.briefing_time(cfg)
+    except ValueError as e:
+        return _check('每日简报', FAIL, str(e), '改 .env 里的 LARKX_BRIEFING_AT, 如 09:00; 关掉写 off')
+    if not t:
+        return _check('每日简报', OK, '已关闭')
+    if not (cfg.get('notify_chat') or notify._load().get('owner_chat')):
+        return _check('每日简报', WARN, f'每天 {t[0]:02d}:{t[1]:02d} 发, 但还没找到本人私聊',
+                      'daemon 第一次发通知时会自动找到; 也可以设 LARKX_NOTIFY_CHAT')
+    return _check('每日简报', OK, f'每天 {t[0]:02d}:{t[1]:02d} 发到本人私聊, 周一附上周回顾')
+
+
 def run(skip_model=False) -> list:
     cfg = load_config()
     checks = [check_login(), *check_config(cfg), check_agent_cli(cfg)]
@@ -197,4 +212,5 @@ def run(skip_model=False) -> list:
     checks.append(check_user_skills())
     checks.append(check_jobs(cfg))
     checks.append(check_backfill(cfg))
+    checks.append(check_briefing(cfg))
     return checks

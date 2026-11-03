@@ -23,7 +23,7 @@ STATUS_NAMES = {'queued': '排队', 'running': '运行中', 'ok': '完成', 'fai
 class Job:
     name: str
     title: str
-    kind: str        # local: daemon 里直接跑的代码; agent: 交给数字人的一轮(维护任务)
+    kind: str        # local: daemon 里直接跑的代码; agent: 交给数字人的一轮维护任务; report: 交给数字人写给本人的汇报
     when: Callable   # cfg -> (时, 分, 星期几或 None); 关掉时返回 None
     grace: int = 0   # 到点后超过这么多秒还没开始就不跑了, 记为跳过(0 = 当天内都补)
     max_attempts: int = 2
@@ -55,6 +55,26 @@ def _bootstrap_on(cfg):
     return (0, 0, None) if int(cfg.get('backfill_days') or 0) > 0 and 0 <= cfg.get('memory_review_hour', -1) <= 23 else None
 
 
+def briefing_time(cfg):
+    """LARKX_BRIEFING_AT 解析成 (时, 分); 关掉返回 None, 格式不对抛 ValueError。"""
+    text = str(cfg.get('briefing_at') or '').strip().lower()
+    if text in ('', 'off', 'none', '-1', 'false'):
+        return None
+    try:
+        t = datetime.strptime(text, '%H:%M')
+    except ValueError:
+        raise ValueError(f'LARKX_BRIEFING_AT 格式不对: {text!r}, 应为 HH:MM, 如 09:00')
+    return t.hour, t.minute
+
+
+def _briefing_at(cfg):
+    try:
+        t = briefing_time(cfg)
+    except ValueError:
+        return None
+    return (t[0], t[1], None) if t else None
+
+
 def _after_review(cfg):
     """回顾后半小时清理; 关掉回顾时按 4:30。"""
     hour = cfg.get('memory_review_hour', -1)
@@ -66,6 +86,7 @@ JOBS = [
     Job('review', '每日回顾', 'agent', _review_at),
     Job('consolidate', '每周整理记忆', 'agent', _consolidate_at),
     Job('prune', '清理旧数据', 'local', _after_review),
+    Job('briefing', '每日简报', 'report', _briefing_at, grace=3 * 3600),
     Job('backfill', '回填历史', 'local', _backfill_on, once=True, max_attempts=3),
     Job('bootstrap', '初始化记忆', 'agent', _bootstrap_on, once=True),
 ]

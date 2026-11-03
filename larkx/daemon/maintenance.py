@@ -11,9 +11,9 @@ from datetime import datetime
 
 from loguru import logger
 
-from .. import backfill, groups, jobs, retention
+from .. import backfill, digest, groups, jobs, retention
 from .prompts import BUILDERS
-from .triggers import build_system_prompt
+from .triggers import build_report_prompt, build_system_prompt
 
 ALERT_COOLDOWN = 6 * 3600
 BOOTSTRAP_BATCH = 8
@@ -66,10 +66,18 @@ class Maintenance:
             task.add_done_callback(self._tasks.discard)
         else:
             from . import Event
-            prompt = build_system_prompt(BUILDERS[job.name](self.d.cfg, self.d.storage, datetime.now(),
-                                                            str(self.d.auth.user_id)))
-            await self.d.inbox.put(Event('system', prompt, chat_id=self.d.notifier.owner_chat(), ref=run.ref,
-                                         run_id=run.id))
+            owner_chat = self.d.notifier.owner_chat()
+            text = BUILDERS[job.name](self.d.cfg, self.d.storage, datetime.now(), str(self.d.auth.user_id),
+                                      client=self.d.client, owner_chat=owner_chat)
+            if job.kind == 'report':
+                if not owner_chat:
+                    self._failed(run, '找不到本人私聊, 发不了汇报')
+                    return run
+                ev = Event('report', build_report_prompt(job.name, text, owner_chat), chat_id=owner_chat, ref=run.ref,
+                           run_id=run.id)
+            else:
+                ev = Event('system', build_system_prompt(text), chat_id=owner_chat, ref=run.ref, run_id=run.id)
+            await self.d.inbox.put(ev)
         return run
 
     def _once_slot(self, job: jobs.Job):
@@ -113,6 +121,8 @@ class Maintenance:
         run = self.store.get(ev.run_id)
         if not run:
             return
+        if run.job == 'briefing':
+            return self._briefing_done(ev, run, result)
         if result is not None and not result.is_error:
             self.store.finish(run.id, result.text or '')
             if run.job == 'bootstrap' and run.slot.startswith('batch-'):
@@ -122,6 +132,21 @@ class Maintenance:
             return
         err = ('agent 会话中断, 结果未知' if result is None else f'{result.subtype}: {result.text or ""}')
         self._failed(run, err)
+
+    def _briefing_done(self, ev, run, result):
+        """简报这一轮结束: 查审计里有没有真的发到本人私聊; 没发出就由代码直接发数据版兜底。"""
+        sent = any(a.action == 'send' and a.ok and a.chat_id == ev.chat_id
+                   for a in self.d.storage.actions_for_turns([run.ref]))
+        if sent and result is not None and not result.is_error:
+            self.store.finish(run.id, result.text or '已发出')
+            return
+        data = digest.briefing_data(self.d.storage, str(self.d.auth.user_id), client=self.d.client)
+        ok = self.d.notifier.send(digest.render(data) + '\n\n(分身这次没写成简报, 以上是数据版)')
+        why = '数字人没有发出简报' if result is not None and not result.is_error else \
+            ('agent 会话中断' if result is None else f'{result.subtype}: {result.text or ""}')
+        self.store.fail(run.id, why + ('; 已发数据版兜底' if ok else '; 兜底也没发出去'))
+        if not ok:
+            self._failed(run, why + '; 兜底也没发出去')
 
     async def _run_local(self, job: jobs.Job, run):
         self.store.start(run.id)

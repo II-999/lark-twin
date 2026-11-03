@@ -417,7 +417,8 @@ class Storage:
         try:
             q = s.query(Message).filter(Message.create_time >= since_ts, Message.sender_id != str(user_id),
                                         Message.direction == 'in')
-            cond = [Message.chat_type == 1]
+            # 结构化的 @(入库时记在 content_data 的 _larkx_mention_ids 里)和正文里的 @名字 都算
+            cond = [Message.chat_type == 1, Message.content_data.like(f'%"{user_id}"%')]
             if name:
                 cond.append(Message.content.like(f'%@{name}%'))
             rows = q.filter(or_(*cond)).order_by(Message.create_time).limit(limit).all()

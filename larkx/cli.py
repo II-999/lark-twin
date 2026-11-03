@@ -815,7 +815,7 @@ def cmd_jobs(args):
         if not job:
             return _fail(args, f'用法: larkx jobs run <名字>, 可用: {", ".join(j.name for j in jobs.JOBS)}')
         if args.preview:
-            if job.kind != 'agent':
+            if job.kind == 'local':
                 return _fail(args, f'{job.name} 不是交给数字人的任务, 没有提示词')
             print(BUILDERS[job.name](cfg, st, now, _owner_id()))
             return 0
