@@ -263,7 +263,7 @@ def cmd_config(args):
 
 
 def _chat_tags(r: dict) -> str:
-    tags = [r['attention_name'] + ('' if r['attention_source'] in ('跟组', '单独设置') else '·建议')]
+    tags = [r['attention_name'] + ('' if r['attention_source'] in ('跟分类', '单独设置') else '·建议')]
     tags += (['私人'] if r['private'] else []) + (['免打扰'] if r['feishu_muted'] else []) + \
         (['置顶'] if r['feishu_pinned'] else [])
     return ' '.join(f'[{t}]' for t in tags)
@@ -294,19 +294,19 @@ def cmd_chats(args):
         return 0
     for r in rows:
         type_name = {1: '私聊', 2: '群聊', 3: '话题群'}.get(r['chat_type'], '?')
-        group = r['group'] or (f"{r['suggested_group']}?" if r['suggested_group'] else '未分组')
+        group = r['group'] or (f"{r['suggested_group']}?" if r['suggested_group'] else '未分类')
         print(f"{r['chat_id']}\t{type_name}\t{r['name'] or '(未命名)'}\t{group}\t{_chat_tags(r)}\t更新于 {r['updated_at']}")
     return 0
 
 
 def _owner_turn_denied() -> str:
-    """数字人只有在本人发起的轮次里才能改分组(和监听任务一样)。"""
+    """数字人只有在本人发起的轮次里才能改分类(和监听任务一样)。"""
     if not is_agent_actor():
         return ''
     turn = state.read_turn()
     if turn and turn.get('is_owner') and turn.get('kind') in ('message', 'say'):
         return ''
-    return '只有本人发起时才能调整会话分组'
+    return '只有本人发起时才能调整会话分类'
 
 
 def _resolve_chats(args, cs, targets) -> list:
@@ -332,7 +332,7 @@ def _resolve_chats(args, cs, targets) -> list:
 
 
 def cmd_groups(args):
-    """会话分组: 看组和成员数、建组、改组(关注度、关键词、私人)、删组、把会话归进组、刷新画像。"""
+    """会话分类: 看分类和成员数、建分类、改分类(关注度、关键词、私人)、删分类、把会话归进分类、刷新画像。"""
     from . import groups
     st = Storage()
     cs = groups.ChatStore(st)
@@ -351,7 +351,7 @@ def cmd_groups(args):
         for g in rows:
             extra = (' 私人' if g['private'] else '') + (f" 关键词: {', '.join(g['keywords'])}" if g['keywords'] else '')
             print(f"{g['name']}\t{g['attention_name']}\t{g['chats']} 个会话{extra}")
-        print(f'未分组: {unassigned} 个会话(按画像建议生效, larkx chats 查看)')
+        print(f'未分类: {unassigned} 个会话(按画像建议生效, larkx chats 查看)')
         return 0
     denied = _owner_turn_denied()
     if denied:
@@ -371,16 +371,16 @@ def cmd_groups(args):
             return _fail(args, f'用法: larkx groups {args.action} <名字>')
         if args.action == 'add':
             g = cs.create_group(args.targets[0], attention or 'light', keywords or [], bool(args.private))
-            _audit(st, 'group', '', f'建组 {g.name} {groups.ATTENTION[g.attention]}')
-            msg = f'已建组「{g.name}」({groups.ATTENTION[g.attention]}), 立即生效'
+            _audit(st, 'group', '', f'建分类 {g.name} {groups.ATTENTION[g.attention]}')
+            msg = f'已建分类「{g.name}」({groups.ATTENTION[g.attention]}), 立即生效'
         elif args.action in ('edit', 'remove'):
             g = cs.group(args.targets[0])
             if not g:
-                return _fail(args, f'没有组「{args.targets[0]}」, 用 larkx groups 查看')
+                return _fail(args, f'没有分类「{args.targets[0]}」, 用 larkx groups 查看')
             if args.action == 'remove':
                 n = cs.delete_group(g.id)
-                _audit(st, 'group', '', f'删组 {g.name}')
-                msg = f'已删组「{g.name}」, {n} 个会话变成未分组'
+                _audit(st, 'group', '', f'删分类 {g.name}')
+                msg = f'已删分类「{g.name}」, {n} 个会话变成未分类'
             else:
                 fields = {k: v for k, v in (('name', args.name), ('attention', attention or None),
                                              ('keywords', keywords)) if v is not None}
@@ -389,23 +389,23 @@ def cmd_groups(args):
                 if not fields:
                     return _fail(args, '要改什么? --name / --attention / --keywords / --private / --no-private')
                 g = cs.update_group(g.id, **fields)
-                _audit(st, 'group', '', f'改组 {g.name}: {fields}')
-                msg = f'已更新组「{g.name}」, 立即生效'
+                _audit(st, 'group', '', f'改分类 {g.name}: {fields}')
+                msg = f'已更新分类「{g.name}」, 立即生效'
         else:  # assign
             if args.to is None and attention is None:
-                return _fail(args, '要指定 --to <组名> 或 --attention <关注度|跟组>')
+                return _fail(args, '要指定 --to <分类名> 或 --attention <关注度|跟分类>')
             group_id = None
             if args.to is not None:
                 g = cs.group(args.to) if args.to else None
                 if args.to and not g:
-                    return _fail(args, f'没有组「{args.to}」, 先 larkx groups add {args.to}')
+                    return _fail(args, f'没有分类「{args.to}」, 先 larkx groups add {args.to}')
                 group_id = g.id if g else 0
             ids = _resolve_chats(args, cs, args.targets)
             if ids is None:
                 return 1
             cs.assign(ids, group_id=group_id, attention=attention)
             names = '、'.join(r['name'] or r['chat_id'] for r in cs.view(ids))
-            _audit(st, 'group', ','.join(ids), f'归组 {names} -> {args.to or "-"} {attention or ""}')
+            _audit(st, 'group', ','.join(ids), f'归类 {names} -> {args.to or "-"} {attention or ""}')
             msg = f'已调整 {names}, 立即生效'
     except ValueError as e:
         return _fail(args, str(e))
@@ -1313,22 +1313,22 @@ def main():
     p.add_argument('--mention', action='append', default=[], metavar='USER_ID:NAME', help='真实 @对象，可重复')
     p = sub.add_parser('config', help='查看生效中的配置(配置项写在 .env 里)')
     p.set_defaults(fn=cmd_config)
-    p = sub.add_parser('chats', help='列出本地会话, 带分组和关注度')
+    p = sub.add_parser('chats', help='列出本地会话, 带分类和关注度')
     p.add_argument('--attention', help='只看这些关注度, 逗号分隔: 重点关注,简单关注,只存不看')
-    p.add_argument('--group', help='只看这个组(含建议归到这个组的)')
+    p.add_argument('--group', help='只看这个分类(含建议归到这个分类的)')
     p.add_argument('--active', help='最近多久有消息, 如 24h、7d')
     p.add_argument('--feishu-muted', action='store_true', help='只看在飞书里设了免打扰的')
     p.add_argument('--limit', type=int, default=50)
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_chats)
-    p = sub.add_parser('groups', help='会话分组与关注度: 看、建、改、删组, 把会话归进组, 刷新画像')
+    p = sub.add_parser('groups', help='会话分类与关注度: 看、建、改、删分类, 把会话归进分类, 刷新画像')
     p.add_argument('action', nargs='?', choices=['list', 'add', 'edit', 'remove', 'assign', 'profile'], default='list')
-    p.add_argument('targets', nargs='*', help='add/edit/remove: 组名; assign: 会话名或 chat_id(可多个)')
-    p.add_argument('--to', help='assign: 归到哪个组(空字符串 = 移出分组)')
-    p.add_argument('--attention', help='关注度: 重点关注 / 简单关注 / 只存不看; assign 时写「跟组」恢复跟组')
-    p.add_argument('--keywords', help='add/edit: 组关键词, 逗号分隔; 简单关注时这些词出现也算和你有关')
-    p.add_argument('--name', help='edit: 新组名')
-    p.add_argument('--private', action=argparse.BooleanOptionalAction, default=None, help='私人组: 内容不进工作记忆')
+    p.add_argument('targets', nargs='*', help='add/edit/remove: 分类名; assign: 会话名或 chat_id(可多个)')
+    p.add_argument('--to', help='assign: 归到哪个分类(空字符串 = 移出分类)')
+    p.add_argument('--attention', help='关注度: 重点关注 / 简单关注 / 只存不看; assign 时写「跟分类」恢复跟分类')
+    p.add_argument('--keywords', help='add/edit: 分类关键词, 逗号分隔; 简单关注时这些词出现也算和你有关')
+    p.add_argument('--name', help='edit: 新分类名')
+    p.add_argument('--private', action=argparse.BooleanOptionalAction, default=None, help='私人分类: 内容不进工作记忆')
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_groups)
     p = sub.add_parser('sessions', help='列出 agent 会话(session 表)')
@@ -1435,7 +1435,7 @@ def main():
     p.add_argument('--dry-run', action='store_true', help='只看会回填多少会话')
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_backfill)
-    p = sub.add_parser('organize', help='整理方案(分组、飞书标签、置顶、标记、免打扰): 看、提交、执行、放弃、撤销')
+    p = sub.add_parser('organize', help='整理方案(分类、飞书标签、置顶、标记、免打扰): 看、提交、执行、放弃、撤销')
     p.add_argument('action', nargs='?', choices=['list', 'show', 'submit', 'propose', 'apply', 'reject', 'undo'],
                    default='show')
     p.add_argument('target', nargs='?', help='show/apply/reject/undo: 方案编号(默认最新); submit: JSON 文件或 -')

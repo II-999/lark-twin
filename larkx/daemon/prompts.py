@@ -12,7 +12,7 @@ MEMORY_FORMAT = ('记忆文件的格式: 一个主题一个文件, 命名 我.md
                  '正文自由写。memory/MEMORY.md 由代码按字段生成, 不用改。写完运行 larkx memory lint, 有错误就改掉。')
 REVIEW_PROMPT = ('每日回顾(最近 24 小时)。下面是有动静的会话, 按关注度处理, 用 larkx messages <chat_id> --since 24h 看:\n'
                  '- 重点关注: 逐个看, 值得长期记住的整理进 memory/(人、群、事、约定、待跟进);\n'
-                 '- 简单关注: 也看, 但只记和本人有关的: @本人、提到本人负责的事或组关键词、需要本人处理的;\n'
+                 '- 简单关注: 也看, 但只记和本人有关的: @本人、提到本人负责的事或分类关键词、需要本人处理的;\n'
                  '- 标了「私人」的: 只看有没有需要本人处理的事, 内容不写进记忆;\n'
                  '- 「免打扰」只是本人在飞书里的提醒设置, 照样按关注度看, 和本人有关的尤其不能漏;\n'
                  '- 只存不看的会话已经跳过, 不要去看。\n'
@@ -32,7 +32,7 @@ BRIEFING_PROMPT = ('写今天的工作简报, 发到本人私聊。下面是代�
                    '要求: markdown, 一条消息, 25 行以内, 先写结论。顺序: ① 今天要你处理的(找你还没回的、你标记的、'
                    '到期的提醒和待跟进的事); ② 重点关注的会话进展, 每个一两句, 需要时用 '
                    'larkx messages <chat_id> --since {since} 看; ③ 简单关注和免打扰的群里和本人有关的; ④ 提醒。{weekly}'
-                   '没什么可报的也发一句"今天没有需要你处理的事"。发现某个会话分组明显不合适, 可以在末尾建议'
+                   '没什么可报的也发一句"今天没有需要你处理的事"。发现某个会话分类明显不合适, 可以在末尾建议'
                    '(如: 「xx群」消息多但和你无关, 建议设为只存不看)。')
 BRIEFING_WEEKLY = '今天是周一, 末尾加「上周回顾 / 本周关注」两三条。'
 ORGANIZE_SCHEMA = '''{
@@ -47,19 +47,19 @@ ORGANIZE_SCHEMA = '''{
   "mute": ["会话名或 chat_id", ...], "mute_reason": "..."
 }'''
 ORGANIZE_PROMPT = ('{head}先读 memory/(尤其 我.md、事-*.md)了解本人的工作, 再按下面的现状写一份整理方案, 交给本人确认:\n'
-                   '1. 分组: 按本人的业务线、团队、项目划分(例如「团队核心」「某业务」「会议临时」「部门周知」「技术圈」'
-                   '「需要你处理的通知」「私人」), 每组定关注度: 重点关注(全读、进记忆) / 简单关注(只挑和本人有关的) / '
-                   '只存不看。私人组写 private; 可以给组加关键词(简单关注时提到这些词也算和本人有关)。已有的组沿用名字, '
+                   '1. 分类: 按本人的业务线、团队、项目划分(例如「团队核心」「某业务」「会议临时」「部门周知」「技术圈」'
+                   '「需要你处理的通知」「私人」), 每个分类定关注度: 重点关注(全读、进记忆) / 简单关注(只挑和本人有关的) / '
+                   '只存不看。私人分类写 private; 可以给分类加关键词(简单关注时提到这些词也算和本人有关)。已有的分类沿用名字, '
                    '只写需要变的。{scope}\n'
-                   '2. 置顶: 重点关注里常用却没置顶的建议置顶; 置顶了但 30 天没动静或明显无关的建议取消; 给出按组排的置顶顺序 '
+                   '2. 置顶: 重点关注里常用却没置顶的建议置顶; 置顶了但 30 天没动静或明显无关的建议取消; 给出按分类排的置顶顺序 '
                    'pin_order。本人私人的置顶不要动。\n'
                    '3. 标记: 找本人还没回、需要本人处理的消息, 建议标记(要写 msg_id, 用 larkx messages <chat_id> 查)。\n'
                    '4. 免打扰: 只存不看、现在还会提醒本人的大群, 建议免打扰; 重点关注的不要免打扰。\n'
                    '每条都要有理由, 没必要的改动不要提。写成 JSON 存到 downloads/organize.json, 运行 '
                    'larkx organize submit downloads/organize.json(报错就按提示改了再提交)。方案由系统私信给本人, '
                    '你不用发。{none}JSON 格式:\n{schema}\n\n现状:\n{context}')
-ORGANIZE_INIT_HEAD = '初始整理会话: 刚回填完最近的聊天并初始化了记忆, 现在给本人的全部会话做一次分组。'
-ORGANIZE_WEEKLY_HEAD = '每周整理会话: 看看分组、置顶、标记要不要调整。'
+ORGANIZE_INIT_HEAD = '初始整理会话: 刚回填完最近的聊天并初始化了记忆, 现在给本人的全部会话做一次分类。'
+ORGANIZE_WEEKLY_HEAD = '每周整理会话: 看看分类、置顶、标记要不要调整。'
 # 维护任务的共同结尾: 不对外发消息, 最后一句话总结存进运行记录
 MAINTENANCE_TAIL = ' 不要发飞书消息。最后用一两句话说明这次记了或改了什么(会存进运行记录)。'
 
@@ -69,14 +69,14 @@ def _with_format(text: str) -> str:
 
 
 def chat_line(r: dict) -> str:
-    """会话一行: [关注度] 名字 (chat_id) 组 · 24h 条数 · 本人发言 · @本人 · 标记。"""
+    """会话一行: [关注度] 名字 (chat_id) 分类 · 24h 条数 · 本人发言 · @本人 · 标记。"""
     tags = [r['attention_name']] + (['私人'] if r.get('private') else []) + (['免打扰'] if r.get('feishu_muted') else [])
     parts = [f"24h {r['recent']} 条"]
     if r.get('recent_owner'):
         parts.append(f"本人 {r['recent_owner']} 条")
     if r.get('recent_at_me'):
         parts.append(f"@本人 {r['recent_at_me']} 次")
-    group = f" 组「{r['group'] or r['suggested_group']}」" if (r['group'] or r['suggested_group']) else ''
+    group = f" 分类「{r['group'] or r['suggested_group']}」" if (r['group'] or r['suggested_group']) else ''
     return f"- [{'/'.join(tags)}] {r['name'] or '(未命名)'} ({r['chat_id']}){group}: {', '.join(parts)}"
 
 
@@ -106,7 +106,7 @@ def bootstrap(cfg: dict, storage, now, owner_id: str = '', **kw) -> str:
     lines = []
     for cid in ids[i * BOOTSTRAP_BATCH:(i + 1) * BOOTSTRAP_BATCH]:
         r = rows[cid]
-        lines.append(f"- {r['name'] or '(未命名)'} ({cid}) 组「{r['group'] or r['suggested_group']}」: "
+        lines.append(f"- {r['name'] or '(未命名)'} ({cid}) 分类「{r['group'] or r['suggested_group']}」: "
                      f"{r['msgs']} 条, 本人 {r['owner_msgs']} 条")
     return BOOTSTRAP_PROMPT.format(i=i + 1, n=n, days=int(cfg.get('backfill_days') or 30), chats='\n'.join(lines),
                                    last=BOOTSTRAP_LAST if i == n - 1 else '') + '\n' + MEMORY_FORMAT + MAINTENANCE_TAIL
@@ -128,6 +128,6 @@ def _organize(head, scope, none):
 
 
 BUILDERS = {'review': review, 'consolidate': consolidate, 'bootstrap': bootstrap, 'briefing': briefing,
-            'organize_init': _organize(ORGANIZE_INIT_HEAD, '每个会话都要归到一个组(机器人推送、大群可以放进只存不看的组)。', ''),
-            'organize': _organize(ORGANIZE_WEEKLY_HEAD, '重点看新会话(未分组的)和关注度明显不合适的。',
+            'organize_init': _organize(ORGANIZE_INIT_HEAD, '每个会话都要归到一个分类(机器人推送、大群可以放进只存不看的分类)。', ''),
+            'organize': _organize(ORGANIZE_WEEKLY_HEAD, '重点看新会话(未分类的)和关注度明显不合适的。',
                                   '这周没有需要调整的就不提交, 直接说明即可。')}

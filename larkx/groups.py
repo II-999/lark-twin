@@ -1,13 +1,13 @@
-"""会话分组与关注度。
+"""会话分类与关注度。
 
 关注度决定分身怎么对待一个会话:
 - 重点关注 focus: 每条都读, 提炼进记忆, 简报里写进展;
-- 简单关注 light: 只挑和本人有关的(@本人、提到本人负责的事或组关键词、需要本人处理的), 简报里只列这些;
+- 简单关注 light: 只挑和本人有关的(@本人、提到本人负责的事或分类关键词、需要本人处理的), 简报里只列这些;
 - 只存不看 archive: 存进本地库能查, 不进回顾和简报, 按保留期清理。
-关注度设在组上, 单个会话可以覆盖; 私人组的内容不进工作记忆。
+关注度设在分类上, 单个会话可以覆盖; 私人分类的内容不进工作记忆。
 
-分组以本人确认的为准。画像(profile)按信号给每个会话一个建议(组名、关注度、原因), 确认前先按建议生效;
-本人确认或手动设置过的会话, 画像只更新信号, 不改它的分组。信号: 本人发言、被 @、私聊对象是不是机器人、
+分类以本人确认的为准。画像(profile)按信号给每个会话一个建议(分类名、关注度、原因), 确认前先按建议生效;
+本人确认或手动设置过的会话, 画像只更新信号, 不改它的分类。信号: 本人发言、被 @、私聊对象是不是机器人、
 群人数、群名、飞书置顶。飞书免打扰只记下来, 不参与降级: 人是因为群太多才免打扰, 分身恰恰该替人读这些群。
 """
 import json
@@ -22,10 +22,10 @@ ATTENTION = {'focus': '重点关注', 'light': '简单关注', 'archive': '只�
 ALIASES = {'重点': 'focus', '重点关注': 'focus', 'focus': 'focus',
            '简单': 'light', '简单关注': 'light', 'light': 'light',
            '只存': 'archive', '只存不看': 'archive', 'archive': 'archive'}
-FOLLOW_GROUP = ('跟组', 'group', 'auto', '自动')
+FOLLOW_GROUP = ('跟分类', 'group', 'auto', '自动')
 PROFILE_DAYS = 30
 BIG_GROUP = 300
-# 建议分组用的名称关键词(不分大小写)
+# 建议分类用的名称关键词(不分大小写)
 BOT_ACTION = ('审批', 'bpm', '日历', '邮箱', '云文档', '权限', '安全', '数据治理', '纪要', 'okr', '任务', 'kani', 'gso')
 BOT_ADMIN = ('餐厅', '工资', '报销', '人力', '访客', '物品', '办公用品', '健康', 'ehs', '廉洁', '道德', '公益', 'travel',
              '班车', '广播', 'techhub', 'bytetech', '活动', '推送助手')
@@ -47,7 +47,7 @@ def _has(name: str, words) -> bool:
 
 
 def suggest(p: ChatProfile, owner_id: str):
-    """按信号给出 (建议组名, 关注度, 原因)。拿不准的给简单关注, 只存不看只给确实没信息量的。"""
+    """按信号给出 (建议分类名, 关注度, 原因)。拿不准的给简单关注, 只存不看只给确实没信息量的。"""
     name = p.name or ''
     if p.chat_type == 1:
         if p.peer_id and str(p.peer_id) == str(owner_id):
@@ -84,7 +84,7 @@ class ChatStore:
         self.storage = storage
         self.Session = storage.Session
 
-    # ---- 组 ----
+    # ---- 分类 ----
 
     def groups(self) -> list:
         s = self.Session()
@@ -107,9 +107,9 @@ class ChatStore:
     def create_group(self, name: str, attention: str = 'light', keywords=(), private: bool = False) -> ChatGroup:
         name = (name or '').strip()
         if not name:
-            raise ValueError('组名不能为空')
+            raise ValueError('分类名不能为空')
         if self.group(name):
-            raise ValueError(f'已经有组「{name}」')
+            raise ValueError(f'已经有分类「{name}」')
         s = self.Session()
         try:
             pos = (s.query(func.max(ChatGroup.position)).scalar() or 0) + 1
@@ -126,10 +126,10 @@ class ChatStore:
         try:
             row = s.get(ChatGroup, group_id)
             if not row:
-                raise ValueError(f'没有组 #{group_id}')
+                raise ValueError(f'没有分类 #{group_id}')
             if 'name' in fields and fields['name'] != row.name and \
                     s.query(ChatGroup).filter(ChatGroup.name == fields['name']).first():
-                raise ValueError(f'已经有组「{fields["name"]}」')
+                raise ValueError(f'已经有分类「{fields["name"]}」')
             if 'keywords' in fields and not isinstance(fields['keywords'], str):
                 fields['keywords'] = json.dumps(list(fields['keywords']), ensure_ascii=False)
             for k, v in fields.items():
@@ -140,7 +140,7 @@ class ChatStore:
             s.close()
 
     def delete_group(self, group_id: int) -> int:
-        """删组; 组里的会话变成未分组(仍算本人确认过, 不会被画像重新归组), 返回会话数。"""
+        """删分类; 分类里的会话变成未分类(仍算本人确认过, 不会被画像重新归类), 返回会话数。"""
         s = self.Session()
         try:
             n = s.query(ChatProfile).filter(ChatProfile.group_id == group_id).update({'group_id': 0})
@@ -160,7 +160,7 @@ class ChatStore:
             s.close()
 
     def assign(self, chat_ids, group_id: int = None, attention=None, by: str = 'cli') -> int:
-        """本人指定会话的分组和/或关注度(attention='' 表示跟组); 之后画像不再改它的分组。"""
+        """本人指定会话的分类和/或关注度(attention='' 表示跟分类); 之后画像不再改它的分类。"""
         s = self.Session()
         try:
             n = 0
@@ -195,7 +195,7 @@ class ChatStore:
         return exact or [(c, n) for c, n in names.items() if q and q.lower() in n.lower()]
 
     def view(self, chat_ids=None) -> list:
-        """会话一览: 名字、分组、生效的关注度和来源、信号。没有画像的会话按简单关注算。"""
+        """会话一览: 名字、分类、生效的关注度和来源、信号。没有画像的会话按简单关注算。"""
         s = self.Session()
         try:
             groups = {g.id: g for g in s.query(ChatGroup).all()}
@@ -211,7 +211,7 @@ class ChatStore:
             if p and p.attention:
                 att, source = p.attention, '单独设置'
             elif g:
-                att, source = g.attention, '跟组'
+                att, source = g.attention, '跟分类'
             elif p and p.suggested_attention:
                 att, source = p.suggested_attention, '建议'
             else:
@@ -272,7 +272,7 @@ class ChatStore:
             s.close()
 
     def save_profile(self, chat_id: str, owner_id: str, **signals) -> tuple:
-        """写信号并重算建议; 返回 (是不是新会话, 建议有没有变)。确认过的会话不改分组。"""
+        """写信号并重算建议; 返回 (是不是新会话, 建议有没有变)。确认过的会话不改分类。"""
         s = self.Session()
         try:
             row = s.get(ChatProfile, str(chat_id))

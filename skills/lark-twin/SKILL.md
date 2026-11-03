@@ -5,7 +5,7 @@ description: 部署和运维 lark-twin 飞书数字人（larkx daemon）：安�
 
 # 部署和运维 lark-twin
 
-lark-twin 以用户本人的飞书账号常驻运行。它由两部分组成：`larkx daemon` 负责收消息和调度定时任务；驱动数字人的 coding agent（Claude Code 或 Codex）负责处理，需要时用 `larkx` 命令在飞书里操作。下面所有命令都在仓库根目录执行。
+lark-twin 以用户本人的飞书账号常驻运行。它由两部分类成：`larkx daemon` 负责收消息和调度定时任务；驱动数字人的 coding agent（Claude Code 或 Codex）负责处理，需要时用 `larkx` 命令在飞书里操作。下面所有命令都在仓库根目录执行。
 
 ## 首次部署
 
@@ -104,7 +104,7 @@ uv venv && uv pip install -e .
 
 看到 `[agent] message ... 结束: success` 并且飞书里收到回复，部署就完成了。也可以直接用 `.venv/bin/larkx say --wait "你好，介绍一下你自己"` 从终端测试。
 
-接下来分身会自己做首次整理，告诉用户大概的节奏：第一轮补收结束后回填最近 30 天的聊天（几分钟到半小时），接着给会话画像、按重点会话初始化记忆，然后把一份整理方案（分组、飞书标签、置顶、标记、免打扰）私信给用户确认；第二天早上收到第一份简报。进度看 `.venv/bin/larkx jobs` 或网页总览。
+接下来分身会自己做首次整理，告诉用户大概的节奏：第一轮补收结束后回填最近 30 天的聊天（几分钟到半小时），接着给会话画像、按重点会话初始化记忆，然后把一份整理方案（分类、飞书标签、置顶、标记、免打扰）私信给用户确认；第二天早上收到第一份简报。进度看 `.venv/bin/larkx jobs` 或网页总览。
 
 ## 日常运维
 
@@ -121,7 +121,7 @@ uv venv && uv pip install -e .
 | 全面检查 | `.venv/bin/larkx doctor` |
 | 网页控制台登录链接 | `.venv/bin/larkx web url`；令牌泄露了用 `larkx web reset-token` |
 | 例行任务（回顾、简报、整理、清理、回填） | `.venv/bin/larkx jobs` 看状态和下次时间，`jobs log --job <名字>` 看记录，`jobs run <名字>` 立即跑一次；网页"例行任务"页 |
-| 会话分组和关注度 | `.venv/bin/larkx groups` / `larkx chats`，按名字调整：`larkx groups assign <会话名> --to <组名>` 或 `--attention 只存不看`；网页"会话"页。立即生效 |
+| 会话分类和关注度 | `.venv/bin/larkx groups` / `larkx chats`，按名字调整：`larkx groups assign <会话名> --to <分类名>` 或 `--attention 只存不看`；网页"会话"页。立即生效 |
 | 整理方案 | `.venv/bin/larkx organize show` 看最新一份，`apply <编号> --items 1-5`、`reject`、`undo` 执行、放弃、撤销；网页"整理"页 |
 | 清理旧数据 | 每天自动按关注度清理；手动 `.venv/bin/larkx prune --dry-run` 先看会删多少 |
 | 管理谁能唤起数字人 | `.venv/bin/larkx whitelist list` / `add <名字或 user_id>` / `remove <名字或 user_id>`，或者网页控制台的"白名单"页。白名单非空时只有本人和名单里的人能唤起，为空时看 `LARKX_TRIGGER_OWNER_ONLY`。改动立即生效，不用重启。加人前和用户确认是哪一个（同名的看部门和 user_id）。没权限的人想唤起时会自动收到 `LARKX_DENY_REPLY`（`whitelist list` 第二行有说明） |
@@ -133,7 +133,7 @@ uv venv && uv pip install -e .
 | 现象 | 处理 |
 |---|---|
 | 没收到每日简报 | `larkx jobs log --job briefing` 看原因；doctor 的"每日简报"一项检查时间格式和本人私聊。超过 3 小时没发出的那天会跳过 |
-| 某个会话分错了组 | `larkx groups assign <会话名> --to <组名>` 或网页"会话"页改，立即生效；之后画像不会再改它 |
+| 某个会话分错了类 | `larkx groups assign <会话名> --to <分类名>` 或网页"会话"页改，立即生效；之后画像不会再改它 |
 | 首次回填一直没开始 | 回填要等启动后第一轮补收结束；`larkx jobs` 看 backfill 的状态，失败时 `jobs log --job backfill` |
 | 发了消息没反应 | 先看 `service logs`。日志里没有这条消息，说明监听有问题，检查登录和网络。有这条消息但没有"结束"，说明 agent 在处理或卡住了。消息没有被交给数字人，检查触发前缀；如果是自己发给自己，还要检查 `LARKX_ALLOW_SELF` |
 | 日志里有"凭证已过期"或"会话已被服务端注销" | 请用户重新执行 `.venv/bin/larkx auth qr`，然后 `service restart` |

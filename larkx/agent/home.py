@@ -12,7 +12,8 @@ OLD_TEMPLATE_SHA256 = {'6927812ddbec998de7f1785c415889ed74adb266f83768a6a5647216
                        'de2a5b963785a90cbcd3e8e3ae5a0f627804a044352d36d5d8eed506a97337a6',
                        '3e39cab454487972a823ba89b2b290b2019ee01882bf6edab2d46bcc632519a0',
                        '23f7839130d2f6ada2e12fe75d3b57a5ac4688d313bccde0ee0b05526524f01c',
-                       '37d1677e0b79a5b53a2efb1148a645e91c413dffec5dda17ae36352f13780a0d'}
+                       '37d1677e0b79a5b53a2efb1148a645e91c413dffec5dda17ae36352f13780a0d',
+                       '9430e5ff0454808005cc881407b6733a018b34afc2cc8156470e35a260e887ed'}
 GITIGNORE = 'downloads/\n'
 MEMORY_INDEX = '# 记忆索引\n\n每行一条: - [标题](文件名.md) — 一句话说明。具体内容写在对应文件里。\n'
 

@@ -14,8 +14,8 @@
 - **一个会话**：所有会话共用同一个"你"，重启或崩溃后自动接上之前的对话。
 - **长期记忆**：人物、群、事、约定都写进结构化的记忆（我 / 人 / 群 / 事，带状态和截止日期），每天回顾、每周整理，每次修改都有 git 记录。
 - **一上来就懂你**：首次启动回填最近 30 天的聊天，按你的重点会话初始化记忆。
-- **分组和关注度**：会话按业务分组，每组定关注度：重点关注（全读、进记忆）、简单关注（只挑和你有关的）、只存不看。飞书里的免打扰不影响关注度。
-- **整理方案**：分身提出分组、飞书标签、置顶、标记、免打扰的调整，你同意哪条执行哪条，都能撤销。
+- **分类和关注度**：会话按业务分类，每个分类定关注度：重点关注（全读、进记忆）、简单关注（只挑和你有关的）、只存不看。飞书里的免打扰不影响关注度。
+- **整理方案**：分身提出分类、飞书标签、置顶、标记、免打扰的调整，你同意哪条执行哪条，都能撤销。
 - **每日简报**：每天早上私信你：谁找你还没回、你标记的、到期的事、重点会话进展；周一附上周回顾。
 - **不堆垃圾**：只存不看的会话按保留期清理，过期的运行记录自动整理；每个例行任务的运行结果都看得到。
 - **定时跟进**：可以安排"半小时后提醒我""每天早上汇总谁找过我"这类任务。
@@ -68,8 +68,8 @@ larkx takeover start <chat_id> --for 2h --goal "…"   # 让它替你聊一段
 larkx mentions --since 24h       # 最近谁找过你，有没有回
 larkx whitelist add 张三         # 让张三也能唤起数字人（list / remove 查看、移除）
 larkx audit                      # 它发过什么
-larkx chats --attention 重点关注 # 会话和它的组、关注度
-larkx groups assign 告警群 --attention 只存不看   # 按名字调整分组和关注度, 立即生效
+larkx chats --attention 重点关注 # 会话和它的分类、关注度
+larkx groups assign 告警群 --attention 只存不看   # 按名字调整分类和关注度, 立即生效
 larkx organize show              # 最新的整理方案; apply / reject / undo 执行、放弃、撤销
 larkx memory list --type 事 --status 待跟进      # 按字段查记忆; lint 检查
 larkx jobs                       # 回顾、简报、整理、清理等例行任务的状态; log 看记录
@@ -83,7 +83,7 @@ larkx service status | logs -f   # 运行状态
 
 `larkx service install` 会同时装上网页控制台（`lark-twin-web.service`，只监听 `127.0.0.1:18341`），对外由你自己的 Nginx 反向代理。`larkx web url` 打印带令牌的登录链接，打开一次即可；`larkx web reset-token` 让所有已登录的浏览器失效。
 
-打开这个地址就是数字人控制台：总览、对话、会话（分组和关注度）、整理（整理方案）、例行任务、动态、任务、接管、白名单、记忆、人设、日志和指挥。以前的 `/console` 地址会跳回首页。
+打开这个地址就是数字人控制台：总览、对话、会话（分类和关注度）、整理（整理方案）、例行任务、动态、任务、接管、白名单、记忆、人设、日志和指挥。以前的 `/console` 地址会跳回首页。
 
 执行 `larkx skill install` 之后，直接对你的 Claude Code 或 Codex 说"给张三发个消息""看看某个群在聊什么"就可以。完整命令见 `larkx --help`。
 
@@ -137,7 +137,7 @@ larkx rule delete 1
 | `LARKX_MEMORY_REVIEW_HOUR` / `LARKX_MEMORY_CONSOLIDATE_WEEKDAY` | 每日回顾的钟点（默认 4）· 每周整理记忆和会话的日子（默认 0 = 周一） |
 | `LARKX_RETENTION_ARCHIVE_DAYS` / `LARKX_RETENTION_LIGHT_DAYS` | 只存不看（默认 30 天）和简单关注（默认一直保留）会话的消息保留天数 |
 
-数字人的人设在 `~/.larkx/agent/CLAUDE.md`，记忆在 `~/.larkx/agent/memory/`，都可以直接修改（`MEMORY.md` 索引由程序生成）。会话分组、白名单存在库里，在控制台或命令行改，立即生效。
+数字人的人设在 `~/.larkx/agent/CLAUDE.md`，记忆在 `~/.larkx/agent/memory/`，都可以直接修改（`MEMORY.md` 索引由程序生成）。会话分类、白名单存在库里，在控制台或命令行改，立即生效。
 
 ## 注意
 

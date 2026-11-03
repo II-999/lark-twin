@@ -131,8 +131,8 @@ def render(data: dict) -> str:
         lines += [f"- 「{r['name']}」@你 {r['recent_at_me']} 次" + (' 〔免打扰群〕' if r['feishu_muted'] else '')
                   for r in data['light_related']]
     if data.get('new_chats'):
-        lines.append('\n**新加入的会话**(已按建议先归类, 要调整就回「/ai 把 xx 归到 yy 组」)')
-        lines += [f"- 「{c['name']}」→ {c['group'] or '未分组'} · {c['attention']}({c['reason']})" for c in data['new_chats']]
+        lines.append('\n**新加入的会话**(已按建议先归类, 要调整就回「/ai 把 xx 归到 yy 分类」)')
+        lines += [f"- 「{c['name']}」→ {c['group'] or '未分类'} · {c['attention']}({c['reason']})" for c in data['new_chats']]
     if data['week']:
         lines.append('\n**上周概况**: ' + '、'.join(f'{k} {v} 个会话有消息' for k, v in data['week'].items()))
     if data['broken_jobs']:

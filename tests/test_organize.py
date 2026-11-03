@@ -1,4 +1,4 @@
-"""整理方案: 提交校验、编号、按条执行、撤销还原(分组、飞书标签、置顶、标记、免打扰)、权限、私信本人。"""
+"""整理方案: 提交校验、编号、按条执行、撤销还原(分类、飞书标签、置顶、标记、免打扰)、权限、私信本人。"""
 import argparse
 import asyncio
 import json
@@ -63,7 +63,7 @@ def st(tmp_path):
     return s
 
 
-PLAN = {'summary': '按业务分组',
+PLAN = {'summary': '按业务分类',
         'groups': [{'name': 'InfraBuddy', 'attention': '重点关注', 'keywords': ['防劣化'], 'chats': ['项目群', '14'],
                     'reason': '主业务'},
                    {'name': '测试', 'attention': '只存不看', 'chats': ['测试群']}],
@@ -86,7 +86,7 @@ def test_submit_validates_and_numbers(st):
     assert kinds == [(1, 'group'), (2, 'group'), (3, 'label'), (4, 'label'), (5, 'unpin'), (6, 'pin'), (7, 'pin_order'),
                      (8, 'flag'), (9, 'mute')]
     text = store.render(p.id)
-    assert '【初始整理方案 #1】 按业务分组' in text and '1. 建组「InfraBuddy」重点关注(2 个会话: 项目群、陈威)' in text
+    assert '【初始整理方案 #1】 按业务分类' in text and '1. 建分类「InfraBuddy」重点关注(2 个会话: 项目群、陈威)' in text
     assert '/ai 同意 1-5,8' in text and store.by_source('job:organize_init#3')[0].id == p.id
 
 
@@ -187,7 +187,7 @@ def test_organize_prompt_has_context(st, fake_client):
 
 
 def test_label_keeps_local_members_when_remote_read_empty(st):
-    """读标签成员的接口读回空时, 重建标签不能丢掉组里原有的会话。"""
+    """读标签成员的接口读回空时, 重建标签不能丢掉分类里原有的会话。"""
     fs, store = FakeFeishu(), organize.OrganizeStore(st)
     ops = organize.FeishuOps(fs)
     cs = groups.ChatStore(st)

@@ -576,12 +576,12 @@ async function viewCommand() {
     h('p', { class: 'muted', style: 'margin-bottom:0' }, '这些操作也可以在飞书里发 /ai /stop、/ai /clear 完成。'));
 }
 
-// ---- 会话分组 ----
+// ---- 会话分类 ----
 
 async function viewChats() {
-  page('会话', h('span', { class: 'muted' }, '分组和关注度决定分身怎么对待每个会话，改了立即生效'));
-  card(null, h('div', { class: 'rule' }, '重点关注：每条都看、提炼进记忆、简报里写进展；简单关注：只挑和你有关的（@你、提到你负责的事或组关键词）；只存不看：存档可查，不进回顾和简报，按保留期清理。飞书里的免打扰不影响关注度。'));
-  const groupsCard = card('组');
+  page('会话', h('span', { class: 'muted' }, '分类和关注度决定分身怎么对待每个会话，改了立即生效'));
+  card(null, h('div', { class: 'rule' }, '重点关注：每条都看、提炼进记忆、简报里写进展；简单关注：只挑和你有关的（@你、提到你负责的事或分类关键词）；只存不看：存档可查，不进回顾和简报，按保留期清理。飞书里的免打扰不影响关注度。'));
+  const groupsCard = card('分类');
   const q = h('input', { type: 'text', placeholder: '按名字筛选', style: 'flex:1;min-width:200px' });
   const filters = { all: '全部', focus: '重点关注', light: '简单关注', archive: '只存不看', suggested: '还没确认', muted: '飞书免打扰' };
   let filter = 'all', rows = [], gs = { groups: [] };
@@ -590,21 +590,21 @@ async function viewChats() {
   card('会话', h('div', { class: 'row', style: 'margin-bottom:10px' }, tabs, q), table);
 
   function drawGroups() {
-    const name = h('input', { type: 'text', placeholder: '新组名', style: 'width:160px' });
+    const name = h('input', { type: 'text', placeholder: '新分类名', style: 'width:160px' });
     const att = attSelect('light');
-    put(groupsCard, h('h2', {}, '组', h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, `未分组 ${gs.unassigned} 个（按画像建议生效）`)),
+    put(groupsCard, h('h2', {}, '分类', h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, `未分类 ${gs.unassigned} 个（按画像建议生效）`)),
       gs.groups.length ? h('table', {}, h('tbody', {}, gs.groups.map(g => h('tr', {},
         h('td', {}, h('b', {}, g.name), g.private ? h('span', { class: 'tag', style: 'margin-left:6px' }, '私人') : null),
         h('td', {}, attSelect(g.attention, false, v => act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'PUT', body: { attention: v } }); load(); }, '已更新'))),
         h('td', { class: 'muted' }, `${g.chats} 个会话`), h('td', { class: 'muted' }, g.keywords.join('、')),
-        h('td', {}, h('button', { class: 'btn small danger', onclick: () => confirm(`删除组「${g.name}」? 组里的会话变成未分组`) &&
-          act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'DELETE' }); load(); }, '已删除') }, '删除')))))) : h('div', { class: 'empty' }, '还没有组。初始整理时分身会给出分组方案，也可以在这里自己建。'),
+        h('td', {}, h('button', { class: 'btn small danger', onclick: () => confirm(`删除分类「${g.name}」? 分类里的会话变成未分类`) &&
+          act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'DELETE' }); load(); }, '已删除') }, '删除')))))) : h('div', { class: 'empty' }, '还没有分类。初始整理时分身会给出分类方案，也可以在这里自己建。'),
       h('div', { class: 'row', style: 'margin-top:10px' }, name, att, h('button', { class: 'btn small primary', onclick: () => name.value.trim() &&
-        act(async () => { gs = await api('/api/groups', { method: 'POST', body: { name: name.value.trim(), attention: att.value } }); load(); }, '已建组') }, '建组')));
+        act(async () => { gs = await api('/api/groups', { method: 'POST', body: { name: name.value.trim(), attention: att.value } }); load(); }, '已建分类') }, '建分类')));
   }
 
   function attSelect(value, follow = false, onchange) {
-    const s = h('select', {}, follow ? h('option', { value: '' }, typeof follow === 'string' ? follow : '跟组') : null, Object.entries(ATT).map(([k, v]) => h('option', { value: k }, v)));
+    const s = h('select', {}, follow ? h('option', { value: '' }, typeof follow === 'string' ? follow : '跟分类') : null, Object.entries(ATT).map(([k, v]) => h('option', { value: k }, v)));
     s.value = value; if (onchange) s.addEventListener('change', () => onchange(s.value));
     return s;
   }
@@ -614,12 +614,12 @@ async function viewChats() {
     const text = q.value.trim();
     const shown = rows.filter(r => (filter === 'all' || r.attention === filter || (filter === 'suggested' && !r.confirmed) || (filter === 'muted' && r.feishu_muted))
       && (!text || (r.name || '').includes(text)));
-    put(table, shown.length ? h('table', {}, h('thead', {}, h('tr', {}, ['会话', '组', '关注度', '30 天', '依据'].map(t => h('th', {}, t)))),
+    put(table, shown.length ? h('table', {}, h('thead', {}, h('tr', {}, ['会话', '分类', '关注度', '30 天', '依据'].map(t => h('th', {}, t)))),
       h('tbody', {}, shown.slice(0, 300).map(r => {
-        const g = h('select', {}, h('option', { value: 0 }, r.confirmed ? '未分组' : `未分组（建议：${r.suggested_group || '-'}）`), gs.groups.map(x => h('option', { value: x.id }, x.name)));
+        const g = h('select', {}, h('option', { value: 0 }, r.confirmed ? '未分类' : `未分类（建议：${r.suggested_group || '-'}）`), gs.groups.map(x => h('option', { value: x.id }, x.name)));
         g.value = r.group_id || 0;
         g.addEventListener('change', () => act(async () => { await api(`/api/chats/${encodeURIComponent(r.chat_id)}/group`, { method: 'PUT', body: { group_id: Number(g.value) } }); load(); }, '已调整'));
-        const followLabel = r.attention_source === '单独设置' ? '跟组' : `${r.group ? '跟组' : '按建议'}：${ATT[r.attention]}`;
+        const followLabel = r.attention_source === '单独设置' ? '跟分类' : `${r.group ? '跟分类' : '按建议'}：${ATT[r.attention]}`;
         const a = attSelect(r.attention_source === '单独设置' ? r.attention : '', followLabel, v => act(async () => {
           await api(`/api/chats/${encodeURIComponent(r.chat_id)}/group`, { method: 'PUT', body: { attention: v } }); load(); }, '已调整'));
         return h('tr', {},
@@ -643,7 +643,7 @@ async function viewChats() {
 // ---- 整理方案 ----
 
 async function viewOrganize() {
-  page('整理', h('span', { class: 'muted' }, '分身提出的分组、飞书标签、置顶、标记、免打扰方案；你同意哪条执行哪条，都能撤销'));
+  page('整理', h('span', { class: 'muted' }, '分身提出的分类、飞书标签、置顶、标记、免打扰方案；你同意哪条执行哪条，都能撤销'));
   const box = h('div');
   $main.append(box);
   async function load() {
@@ -655,7 +655,7 @@ async function viewOrganize() {
         const cb = i.status === 'pending' ? h('input', { type: 'checkbox', checked: true }) : null;
         if (cb) checks[i.seq] = cb;
         const tag = { applied: '已执行', failed: '失败', rejected: '已放弃', undone: '已撤销' }[i.status];
-        return h('div', { class: 'item' }, h('div', { class: 'meta' }, cb, h('b', {}, `${i.seq}.`), h('span', { class: 'tag' }, { group: '分组', label: '飞书标签', pin: '置顶', unpin: '取消置顶', pin_order: '置顶排序', flag: '标记', mute: '免打扰' }[i.kind] || i.kind),
+        return h('div', { class: 'item' }, h('div', { class: 'meta' }, cb, h('b', {}, `${i.seq}.`), h('span', { class: 'tag' }, { group: '分类', label: '飞书标签', pin: '置顶', unpin: '取消置顶', pin_order: '置顶排序', flag: '标记', mute: '免打扰' }[i.kind] || i.kind),
           tag ? h('span', { class: 'tag' + (i.status === 'failed' ? ' bad' : '') }, tag) : null),
           h('div', { class: 'body' }, i.title), i.reason ? h('div', { class: 'muted' }, i.reason) : null, i.error ? h('div', { class: 'muted' }, i.error) : null);
       });

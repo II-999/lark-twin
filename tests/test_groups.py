@@ -1,4 +1,4 @@
-"""会话画像、分组与关注度: 建议规则、本人确认优先、按名字管理、回顾提示、CLI 权限。"""
+"""会话画像、分类与关注度: 建议规则、本人确认优先、按名字管理、回顾提示、CLI 权限。"""
 import argparse
 import json
 import time
@@ -61,10 +61,10 @@ def test_attention_precedence_and_confirmed_kept(st):
     cs.assign(['g1'], group_id=g.id)
     row = cs.view(['g1'])[0]
     assert (row['group'], row['attention'], row['attention_source'], row['keywords']) == \
-        ('InfraBuddy', 'focus', '跟组', ['防劣化'])
+        ('InfraBuddy', 'focus', '跟分类', ['防劣化'])
     cs.assign(['g1'], attention='archive')
     assert cs.view(['g1'])[0]['attention_source'] == '单独设置'
-    cs.save_profile('g1', OWNER, owner_msgs=9)                       # 画像只改信号和建议, 不动本人设置的分组
+    cs.save_profile('g1', OWNER, owner_msgs=9)                       # 画像只改信号和建议, 不动本人设置的分类
     row = cs.view(['g1'])[0]
     assert (row['group'], row['attention'], row['owner_msgs']) == ('InfraBuddy', 'archive', 9)
     assert cs.delete_group(g.id) == 1

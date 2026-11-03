@@ -84,8 +84,8 @@ larkx messages <chat_id> --limit 30 --json            # 本地库里的消息，
 larkx messages <chat_id> --since 24h --json           # 只看最近一段时间的
 larkx messages <chat_id> --anchor <anchor> --json     # 只看某个话题
 larkx history <chat_id> --count 20 --json             # 从服务器拉最近的历史（本地库缺消息时用）
-larkx chats --json                                    # 最近活跃的会话，带分组和关注度
-larkx chats --attention 重点关注 --active 7d          # 按关注度、活跃时间、组(--group)、免打扰(--feishu-muted)筛
+larkx chats --json                                    # 最近活跃的会话，带分类和关注度
+larkx chats --attention 重点关注 --active 7d          # 按关注度、活跃时间、分类(--group)、免打扰(--feishu-muted)筛
 ```
 
 消息字段：`sender_id`、`sender_name`、`content`、`create_time`（Unix 秒）、`direction`（`in` 表示收到，`out` 表示本人发出），以及 `anchor`（话题 id）。
@@ -132,13 +132,13 @@ larkx memory lint                                    # 检查字段和过期，�
 larkx memory stats                                   # 文件数、待跟进件数、问题数
 ```
 
-## 会话分组（本人发起时才能改）
+## 会话分类（本人发起时才能改）
 
 ```bash
-larkx groups --json                                          # 全部的组、关注度、会话数
-larkx groups add <组名> --attention 重点关注 --keywords 防劣化,回归
-larkx groups assign <会话名或chat_id>... --to <组名>           # 归组；--attention 只存不看 单独设；--attention 跟组 恢复
-larkx groups edit <组名> --attention 简单关注 [--name 新名] [--private]
+larkx groups --json                                          # 全部的分类、关注度、会话数
+larkx groups add <分类名> --attention 重点关注 --keywords 防劣化,回归
+larkx groups assign <会话名或chat_id>... --to <分类名>           # 归类；--attention 只存不看 单独设；--attention 跟分类 恢复
+larkx groups edit <分类名> --attention 简单关注 [--name 新名] [--private]
 ```
 
 关注度：重点关注（每条都看、进记忆）、简单关注（只管和本人有关的）、只存不看（不进回顾）。飞书免打扰不影响关注度。

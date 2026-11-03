@@ -39,7 +39,7 @@ def plan(cfg: dict, storage, now: float = None) -> list:
     for r in groups.ChatStore(storage).view():
         p = profiles.get(r['chat_id'])
         if r['attention'] == 'archive':
-            by_owner = r['attention_source'] in ('跟组', '单独设置')
+            by_owner = r['attention_source'] in ('跟分类', '单独设置')
             if by_owner or (p and p.created_at and p.created_at <= protect):
                 archive.append(r['chat_id'])
         elif r['attention'] == 'light':

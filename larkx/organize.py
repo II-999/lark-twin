@@ -1,6 +1,6 @@
 """整理方案: 分身提出一组改动, 本人同意哪几条就执行哪几条, 每条都能撤销。
 
-改动类型(执行顺序): 分组(本地) -> 飞书标签 -> 取消置顶 -> 置顶 -> 置顶排序 -> 标记消息 -> 免打扰。
+改动类型(执行顺序): 分类(本地) -> 飞书标签 -> 取消置顶 -> 置顶 -> 置顶排序 -> 标记消息 -> 免打扰。
 飞书上的改动只影响本人自己的客户端(置顶、标记、标签、免打扰), 不对外发消息。执行前记下原来的状态, 撤销时还原。
 
 方案由数字人写成 JSON 交给 larkx organize submit(冷启动初始化记忆后一次, 之后每周一次, 本人也可以随时要),
@@ -18,7 +18,7 @@ from . import groups
 from .storage.models import ChatGroup, ChatProfile, Proposal, ProposalItem
 
 KIND_ORDER = ('group', 'label', 'unpin', 'pin', 'pin_order', 'flag', 'mute')
-KIND_NAMES = {'group': '分组', 'label': '飞书标签', 'unpin': '取消置顶', 'pin': '置顶', 'pin_order': '置顶排序',
+KIND_NAMES = {'group': '分类', 'label': '飞书标签', 'unpin': '取消置顶', 'pin': '置顶', 'pin_order': '置顶排序',
               'flag': '标记消息', 'mute': '免打扰'}
 TRIGGER_NAMES = {'init': '初始整理', 'weekly': '每周整理', 'manual': '整理'}
 
@@ -72,7 +72,7 @@ class FeishuOps:
 
     def label_items(self, label_id) -> list:
         """标签里的会话, 尽力而为: 一页最多 50 个(再大接口报 400)。实测这个接口像增量同步, 同一设备常常读回空列表,
-        所以只拿来补充; 标签成员以本地分组为准。"""
+        所以只拿来补充; 标签成员以本地分类为准。"""
         out, cursor = [], ''
         for _ in range(40):
             data = (self.c.api('feed.PullFeedGroupItemsRequest',
@@ -147,11 +147,11 @@ class OrganizeStore:
             params = {'name': g['name'].strip(), 'attention': a, 'private': bool(g.get('private')),
                       'keywords': list(g.get('keywords') or []), 'chat_ids': ids}
             exist = self.chats.group(params['name'])
-            verb = '调整组' if exist else '建组'
+            verb = '调整分类' if exist else '建分类'
             items.append(('group', f"{verb}「{params['name']}」{att[a]}" + ('、私人' if params['private'] else '')
                           + (f"({len(ids)} 个会话: {self._names(ids)})" if ids else ''), g.get('reason', ''), params))
             if plan.get('labels', True) and ids:
-                items.append(('label', f"飞书标签「{params['name']}」放入 {len(ids)} 个会话", '和分组对应, 在飞书里按标签看',
+                items.append(('label', f"飞书标签「{params['name']}」放入 {len(ids)} 个会话", '和分类对应, 在飞书里按标签看',
                               {'group': params['name'], 'chat_ids': ids}))
         for kind in ('unpin', 'pin'):
             for p in plan.get(kind) or []:
@@ -160,7 +160,7 @@ class OrganizeStore:
                               {'chat_id': cid}))
         if plan.get('pin_order'):
             ids = [self._chat(c, raw_ok=True) for c in plan['pin_order']]
-            items.append(('pin_order', f'置顶按组排序({len(ids)} 个): {self._names(ids, 5)}', '', {'chat_ids': ids}))
+            items.append(('pin_order', f'置顶按分类排序({len(ids)} 个): {self._names(ids, 5)}', '', {'chat_ids': ids}))
         for f in plan.get('flag') or []:
             cid = self._chat(f['chat'])
             items.append(('flag', f"标记「{self._names([cid])}」的消息: {str(f.get('text', ''))[:40]}", f.get('reason', ''),
@@ -296,7 +296,7 @@ class OrganizeStore:
         if not left:
             self._set(Proposal, proposal_id, status='done')
 
-    # 分组(本地)
+    # 分类(本地)
     def _apply_group(self, p, ops):
         g = self.chats.group(p['name'])
         snap = {'created': not g, 'group': None if not g else
@@ -334,8 +334,8 @@ class OrganizeStore:
         finally:
             s.close()
 
-    # 飞书标签跟着分组走: 成员 = 本地这个组的全部会话 + 方案里的 + 读得到的原有成员。飞书不支持往已有标签里加会话,
-    # 有同名标签时删掉按并集重建; 读标签成员的接口不可靠, 所以不能只靠它, 本地分组才是准的
+    # 飞书标签跟着分类走: 成员 = 本地这个分类的全部会话 + 方案里的 + 读得到的原有成员。飞书不支持往已有标签里加会话,
+    # 有同名标签时删掉按并集重建; 读标签成员的接口不可靠, 所以不能只靠它, 本地分类才是准的
     def _apply_label(self, p, ops):
         g = self.chats.group(p['group'])
         labels = ops.labels()
@@ -414,20 +414,20 @@ class OrganizeStore:
 
 
 def context(storage, client, owner_id: str) -> str:
-    """给数字人写方案用的现状: 全部会话(信号、当前分组和建议)、已有的组、飞书置顶顺序和标签、找本人还没回的消息。"""
+    """给数字人写方案用的现状: 全部会话(信号、当前分类和建议)、已有的分类、飞书置顶顺序和标签、找本人还没回的消息。"""
     from . import digest
     cs = groups.ChatStore(storage)
     ops = FeishuOps(client) if client else None
-    lines = ['会话(名字 | chat_id | 类型 | 人数 | 30天消息/本人发言/@本人 | 置顶/免打扰 | 当前组(关注度, 来源) | 画像建议):']
+    lines = ['会话(名字 | chat_id | 类型 | 人数 | 30天消息/本人发言/@本人 | 置顶/免打扰 | 当前分类(关注度, 来源) | 画像建议):']
     for r in sorted(cs.view(), key=lambda r: -(r['msgs'] or 0)):
         kind = {1: '私聊' + ('·机器人' if r['peer_bot'] else ''), 2: '群', 3: '话题群'}.get(r['chat_type'], '?')
         flags = '/'.join(x for x, on in (('置顶', r['feishu_pinned']), ('免打扰', r['feishu_muted'])) if on) or '-'
         lines.append(f"- {r['name'] or '(未命名)'} | {r['chat_id']} | {kind} | {r['members'] or ''} | "
                      f"{r['msgs']}/{r['owner_msgs']}/{r['at_me']} | {flags} | "
-                     f"{r['group'] or '未分组'}({r['attention_name']}, {r['attention_source']}) | "
+                     f"{r['group'] or '未分类'}({r['attention_name']}, {r['attention_source']}) | "
                      f"{r['suggested_group']}/{groups.ATTENTION.get(r['suggested_attention'], '')}: {r['reason']}")
     gs = cs.groups()
-    lines.append('\n已有的组: ' + ('; '.join(f"{g.name}({groups.ATTENTION[g.attention]}{'、私人' if g.private else ''})"
+    lines.append('\n已有的分类: ' + ('; '.join(f"{g.name}({groups.ATTENTION[g.attention]}{'、私人' if g.private else ''})"
                                          for g in gs) or '还没有'))
     if ops:
         try:

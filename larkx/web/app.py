@@ -138,7 +138,7 @@ def _hourly(st: Storage, hours: int = 24) -> list:
 
 
 def _lifecycle(st, cfg, home) -> dict:
-    """总览上的例行任务、分组、回填、记忆、待定的整理方案。"""
+    """总览上的例行任务、分类、回填、记忆、待定的整理方案。"""
     from .. import groups, jobs, memory as mem
     from ..organize import OrganizeStore
     store, now = jobs.JobStore(st), datetime.now()
@@ -240,7 +240,7 @@ def conversations(request: Request):
 
 @api
 def chats(request: Request):
-    """会话列表, 按最近活跃排序, 带分组、关注度和画像信号。"""
+    """会话列表, 按最近活跃排序, 带分类、关注度和画像信号。"""
     from .. import groups
     st, owner = Storage(), _owner_chat()
     order = [c.chat_id for c in st.list_chats(limit=int(request.query_params.get('limit', 500)))]
@@ -263,26 +263,26 @@ def _group_rows(st) -> dict:
 
 @api
 def groups_api(request: Request):
-    """会话分组: GET 列表; POST 建组 {name, attention, keywords, private}。改了立即生效。"""
+    """会话分类: GET 列表; POST 建分类 {name, attention, keywords, private}。改了立即生效。"""
     from .. import groups
     st = Storage()
     if request.method == 'POST':
         b = request.state.body
         g = groups.ChatStore(st).create_group(str(b.get('name') or ''), groups.parse_attention(b.get('attention') or 'light'),
                                               b.get('keywords') or [], bool(b.get('private')))
-        st.log_action(actor='human', action='group', content=f'网页建组 {g.name}')
+        st.log_action(actor='human', action='group', content=f'网页建分类 {g.name}')
     return _json(_group_rows(st))
 
 
 @api
 def group_item(request: Request):
-    """PUT 改组(name/attention/keywords/private); DELETE 删组(组里的会话变成未分组)。"""
+    """PUT 改分类(name/attention/keywords/private); DELETE 删分类(分类里的会话变成未分类)。"""
     from .. import groups
     st, gid = Storage(), request.path_params['group_id']
     cs = groups.ChatStore(st)
     if request.method == 'DELETE':
         cs.delete_group(gid)
-        st.log_action(actor='human', action='group', content=f'网页删组 #{gid}')
+        st.log_action(actor='human', action='group', content=f'网页删分类 #{gid}')
     else:
         b = request.state.body
         fields = {k: b[k] for k in ('name', 'keywords') if k in b}
@@ -291,13 +291,13 @@ def group_item(request: Request):
         if 'private' in b:
             fields['private'] = 1 if b['private'] else 0
         cs.update_group(gid, **fields)
-        st.log_action(actor='human', action='group', content=f'网页改组 #{gid}: {fields}')
+        st.log_action(actor='human', action='group', content=f'网页改分类 #{gid}: {fields}')
     return _json(_group_rows(st))
 
 
 @api
 def chat_group(request: Request):
-    """PUT {group_id: 组 id 或 0, attention: 关注度 或 '' 跟组}: 本人指定会话的分组和关注度, 立即生效。"""
+    """PUT {group_id: 分类 id 或 0, attention: 关注度 或 '' 跟分类}: 本人指定会话的分类和关注度, 立即生效。"""
     from .. import groups
     st, cid, b = Storage(), request.path_params['chat_id'], request.state.body
     cs = groups.ChatStore(st)
@@ -305,12 +305,12 @@ def chat_group(request: Request):
     if 'group_id' in b:
         gid = int(b['group_id'] or 0)
         if gid and not cs.group(gid):
-            raise ValueError('没有这个组')
+            raise ValueError('没有这个分类')
     att = None
     if 'attention' in b:
         att = '' if not b['attention'] else groups.parse_attention(b['attention'])
     cs.assign([cid], group_id=gid, attention=att, by='web')
-    st.log_action(actor='human', action='group', chat_id=cid, content=f'网页归组 group={gid} attention={att}')
+    st.log_action(actor='human', action='group', chat_id=cid, content=f'网页归类 group={gid} attention={att}')
     return _json(cs.view([cid])[0])
 
 

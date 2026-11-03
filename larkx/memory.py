@@ -12,7 +12,7 @@
     ---
     正文自由写。
 
-memory/MEMORY.md 是索引, 由代码按这些字段生成(按 我/人/群/事 分组), 不用手写; 旧内容放 memory/archive/。
+memory/MEMORY.md 是索引, 由代码按这些字段生成(按 我/人/群/事 分类), 不用手写; 旧内容放 memory/archive/。
 lint 检查字段、过期和体积, list 按字段筛选, CLI、网页、doctor、简报都用这里。
 """
 import re

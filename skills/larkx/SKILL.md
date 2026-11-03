@@ -10,8 +10,8 @@ description: 以本人的飞书账号（网页登录态）操作飞书 IM：给�
 ## 找到会话
 
 ```bash
-larkx chats --json                 # 最近活跃的会话：chat_id、name、chat_type（1 私聊，2 群，3 话题群）、组和关注度
-larkx chats --attention 重点关注 --active 7d   # 按关注度、活跃时间、--group 组、--feishu-muted 免打扰筛
+larkx chats --json                 # 最近活跃的会话：chat_id、name、chat_type（1 私聊，2 群，3 话题群）、分类和关注度
+larkx chats --attention 重点关注 --active 7d   # 按关注度、活跃时间、--group 分类、--feishu-muted 免打扰筛
 larkx search <名字或群名>          # 搜人和群，输出 JSON
 ```
 
@@ -110,15 +110,15 @@ larkx mentions --since 24h        # 别人的私聊和 @你 的群消息；● �
 
 数字人的人设和行为准则在 `~/.larkx/agent/CLAUDE.md`，长期记忆在 `~/.larkx/agent/memory/`，这两处都可以直接查看和修改。
 
-## 会话分组、整理方案和记忆
+## 会话分类、整理方案和记忆
 
-会话按组管理，关注度有三档：重点关注（全读、进记忆）、简单关注（只挑和本人有关的）、只存不看。改了立即生效。
+会话按分类管理，关注度有三档：重点关注（全读、进记忆）、简单关注（只挑和本人有关的）、只存不看。改了立即生效。
 
 ```bash
-larkx groups                                         # 组和会话数
+larkx groups                                         # 分类和会话数
 larkx groups add InfraBuddy --attention 重点关注 --keywords 防劣化
-larkx groups assign <会话名或chat_id>... --to InfraBuddy   # 归组; --attention 只存不看 单独设
-larkx organize show                                  # 分身给的最新整理方案(分组、飞书标签、置顶、标记、免打扰)
+larkx groups assign <会话名或chat_id>... --to InfraBuddy   # 归类; --attention 只存不看 单独设
+larkx organize show                                  # 分身给的最新整理方案(分类、飞书标签、置顶、标记、免打扰)
 larkx organize apply <编号> --items 1-5,8            # 同意的条目; reject 放弃; undo 撤销
 larkx memory list --type 事 --status 待跟进          # 分身记下的待跟进; lint 检查; stats 统计
 larkx jobs                                           # 回顾、简报、整理、清理等例行任务; jobs run briefing 立即发一份简报
