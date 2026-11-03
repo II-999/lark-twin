@@ -18,8 +18,9 @@ from ..protocol import AuthExpired, LarkAuth, LarkClient
 from ..storage import ACK_REACTION, Storage
 from ..event_rules import RuleStore
 from .listener import Listener
-from .triggers import (build_prompt, build_say_prompt, build_system_prompt, build_task_prompt, denied_attempt,
-                       parse_command, parse_takeover, should_handle, strip_mentions, strip_prefix, takeover_note)
+from .triggers import (build_prompt, build_report_prompt, build_say_prompt, build_system_prompt, build_task_prompt,
+                       denied_attempt, parse_command, parse_takeover, should_handle, strip_mentions, strip_prefix,
+                       takeover_note)
 
 LOG_PATH = DATA_DIR / 'logs' / 'daemon.log'
 DAEMON_STATE = state.STATE_DIR / 'daemon.json'
@@ -310,10 +311,9 @@ class Daemon:
             logger.info(f'接管结束({why}): {name}')
             if not owner_chat:
                 continue
-            prompt = build_system_prompt(TAKEOVER_SUMMARY.format(name=name, chat=tk.chat_id, why=why, goal=tk.goal or '(无)'))
-            prompt = prompt.replace('<system>', '<task>').replace('</system>', '</task>') + \
-                f"\n\n用 larkx send {owner_chat} - <<'EOF' ... EOF 发给本人。"
-            await self.inbox.put(Event('task', prompt, chat_id=owner_chat, is_owner=True, ref=f'takeover-end:{tk.chat_id}'))
+            prompt = build_report_prompt('takeover', TAKEOVER_SUMMARY.format(
+                name=name, chat=tk.chat_id, why=why, goal=tk.goal or '(无)'), owner_chat)
+            await self.inbox.put(Event('report', prompt, chat_id=owner_chat, ref=f'takeover-end:{tk.chat_id}'))
 
     @staticmethod
     def _message_event(msg, body, chat_name, sender_name, is_owner, inbox_id, note=''):
@@ -582,7 +582,8 @@ class Daemon:
                 if 0 <= hour <= 23 and datetime.now().hour >= hour and st.get('last_review') != today:
                     st['last_review'] = today
                     self._save_state(st)
-                    await self.inbox.put(Event('system', build_system_prompt(REVIEW_PROMPT), ref='daily-review'))
+                    await self.inbox.put(Event('system', build_system_prompt(REVIEW_PROMPT), chat_id=self.notifier.owner_chat(),
+                                               ref='daily-review'))
             except Exception as e:
                 logger.exception(f'调度异常: {e!r}')
             await asyncio.sleep(SCHEDULER_INTERVAL)

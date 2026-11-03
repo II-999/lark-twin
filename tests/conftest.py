@@ -6,7 +6,11 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_local_state(monkeypatch, tmp_path):
     """测试一律用临时库和临时状态目录, 不写进本机真实的 ~/.larkx。"""
+    import os
     from larkx import daemon, notify, state
+    # 本机 .env 里的配置(load_dotenv 会向上找到它)不能带进测试, 一律从代码默认值出发
+    for key in [k for k in os.environ if k.startswith('LARKX_')]:
+        monkeypatch.delenv(key)
     monkeypatch.setenv('LARKX_STORAGE_URL', f'sqlite:///{tmp_path}/default.db')
     monkeypatch.setattr(state, 'STATE_DIR', tmp_path / 'state')
     monkeypatch.setattr(state, 'TURN_PATH', tmp_path / 'state' / 'turn.json')
@@ -14,9 +18,6 @@ def _isolate_local_state(monkeypatch, tmp_path):
     monkeypatch.setattr(state, 'FORWARD_DIR', tmp_path / 'state' / 'forward')
     monkeypatch.setattr(notify, 'NOTIFY_STATE', tmp_path / 'state' / 'notify.json')
     monkeypatch.setattr(daemon, 'DAEMON_STATE', tmp_path / 'state' / 'daemon.json')
-    # 本机 .env 里可能改过没权限回复的文字, 测试一律从代码默认值出发
-    monkeypatch.delenv('LARKX_DENY_REPLY', raising=False)
-    monkeypatch.delenv('LARKX_DENY_REPLY_COOLDOWN', raising=False)
 
 
 class FakeClient:
