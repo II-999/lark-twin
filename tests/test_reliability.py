@@ -213,8 +213,8 @@ def test_takeover_flow(tmp_path, monkeypatch, fake_client):
     assert asyncio.run(run()) == 1                       # 只有对方那条进了队列, 本人插话不触发
     ev = obj.inbox.get_nowait()
     assert ev.ref == 'c2' and '接管' in ev.note and '下周二' in ev.note and not ev.is_owner
-    summary = obj.inbox.get_nowait()                     # 结束后让数字人在本人私聊发总结
-    assert summary.kind == 'task' and summary.chat_id == 'self' and summary.is_owner and 'p1' in summary.prompt
+    summary = obj.inbox.get_nowait()                     # 结束后让数字人写一份汇报, 只能发到本人私聊
+    assert summary.kind == 'report' and summary.chat_id == 'self' and not summary.is_owner and 'p1' in summary.prompt
     assert '本人结束' in summary.prompt
     assert any('已接管' in t for c, t in fake_client.sent if c == 'self')  # 确认只发到本人私聊
     assert all(c == 'self' for c, _ in fake_client.sent)
