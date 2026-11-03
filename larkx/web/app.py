@@ -29,7 +29,7 @@ from ..storage.models import Action, InboxItem, Message
 STATIC = Path(__file__).parent / 'static'
 TOKEN_PATH = DATA_DIR / 'web_token'
 COOKIE = 'larkx_token'
-MEMORY_NAME = re.compile(r'^[\w\-.一-鿿]+\.md$')
+MEMORY_NAME = re.compile(r'^(archive/)?[\w\-.一-鿿]+\.md$')
 _login_cache = {'at': 0, 'value': None}
 
 
@@ -137,6 +137,25 @@ def _hourly(st: Storage, hours: int = 24) -> list:
     return [{'hour': k.strftime('%H:00'), 'received': v[0], 'sent': v[1]} for k, v in buckets.items()]
 
 
+def _lifecycle(st, cfg, home) -> dict:
+    """总览上的例行任务、分组、回填、记忆、待定的整理方案。"""
+    from .. import groups, jobs, memory as mem
+    from ..organize import OrganizeStore
+    store, now = jobs.JobStore(st), datetime.now()
+    att = {}
+    for r in groups.ChatStore(st).view():
+        att[r['attention']] = att.get(r['attention'], 0) + 1
+    prop = OrganizeStore(st).get()
+    pending = [i for i in OrganizeStore(st).items(prop.id) if i.status == 'pending'] if prop else []
+    return {
+        'jobs': [{'name': j.name, 'title': j.title, 'once': j.once, 'enabled': j.when(cfg) is not None,
+                  'next': jobs.next_time(j, cfg, now), 'last': jobs.describe(store.last(j.name))} for j in jobs.JOBS],
+        'attention': att, 'backfill': store.get_state('backfill'), 'bootstrap': store.get_state('bootstrap'),
+        'memory': mem.stats(home) if (home / 'memory').is_dir() else {},
+        'proposal': {'id': prop.id, 'pending': len(pending)} if prop and pending else None,
+    }
+
+
 @api
 def overview(request: Request):
     cfg = load_config()
@@ -172,6 +191,7 @@ def overview(request: Request):
         'tasks_pending': len([t for t in st.list_tasks() if t.status == 'pending']),
         'takeovers': [{'chat_id': t.chat_id, 'until': t.until, 'goal': t.goal} for t in st.takeover_list() if t.until > time.time()],
         'memory_files': memory_files,
+        'lifecycle': _lifecycle(st, cfg, home),
         'hourly': _hourly(st),
     })
 
@@ -220,9 +240,133 @@ def conversations(request: Request):
 
 @api
 def chats(request: Request):
-    owner = _owner_chat()
-    return _json([{'chat_id': c.chat_id, 'name': c.name or (OWNER_CHAT_NAME if c.chat_id == owner else ''),
-                   'chat_type': c.chat_type, 'updated_at': c.updated_at} for c in Storage().list_chats(limit=100)])
+    """会话列表, 按最近活跃排序, 带分组、关注度和画像信号。"""
+    from .. import groups
+    st, owner = Storage(), _owner_chat()
+    order = [c.chat_id for c in st.list_chats(limit=int(request.query_params.get('limit', 500)))]
+    rows = groups.ChatStore(st).view(order)
+    for r in rows:
+        r['name'] = r['name'] or (OWNER_CHAT_NAME if r['chat_id'] == owner else '')
+    return _json(rows)
+
+
+def _group_rows(st) -> dict:
+    from .. import groups
+    cs = groups.ChatStore(st)
+    counts = {}
+    for r in cs.view():
+        counts[r['group_id']] = counts.get(r['group_id'], 0) + 1
+    return {'groups': [{'id': g.id, 'name': g.name, 'attention': g.attention, 'private': bool(g.private),
+                        'keywords': json.loads(g.keywords or '[]'), 'chats': counts.get(g.id, 0)} for g in cs.groups()],
+            'unassigned': counts.get(0, 0), 'attention_names': groups.ATTENTION}
+
+
+@api
+def groups_api(request: Request):
+    """会话分组: GET 列表; POST 建组 {name, attention, keywords, private}。改了立即生效。"""
+    from .. import groups
+    st = Storage()
+    if request.method == 'POST':
+        b = request.state.body
+        g = groups.ChatStore(st).create_group(str(b.get('name') or ''), groups.parse_attention(b.get('attention') or 'light'),
+                                              b.get('keywords') or [], bool(b.get('private')))
+        st.log_action(actor='human', action='group', content=f'网页建组 {g.name}')
+    return _json(_group_rows(st))
+
+
+@api
+def group_item(request: Request):
+    """PUT 改组(name/attention/keywords/private); DELETE 删组(组里的会话变成未分组)。"""
+    from .. import groups
+    st, gid = Storage(), request.path_params['group_id']
+    cs = groups.ChatStore(st)
+    if request.method == 'DELETE':
+        cs.delete_group(gid)
+        st.log_action(actor='human', action='group', content=f'网页删组 #{gid}')
+    else:
+        b = request.state.body
+        fields = {k: b[k] for k in ('name', 'keywords') if k in b}
+        if 'attention' in b:
+            fields['attention'] = groups.parse_attention(b['attention'])
+        if 'private' in b:
+            fields['private'] = 1 if b['private'] else 0
+        cs.update_group(gid, **fields)
+        st.log_action(actor='human', action='group', content=f'网页改组 #{gid}: {fields}')
+    return _json(_group_rows(st))
+
+
+@api
+def chat_group(request: Request):
+    """PUT {group_id: 组 id 或 0, attention: 关注度 或 '' 跟组}: 本人指定会话的分组和关注度, 立即生效。"""
+    from .. import groups
+    st, cid, b = Storage(), request.path_params['chat_id'], request.state.body
+    cs = groups.ChatStore(st)
+    gid = None
+    if 'group_id' in b:
+        gid = int(b['group_id'] or 0)
+        if gid and not cs.group(gid):
+            raise ValueError('没有这个组')
+    att = None
+    if 'attention' in b:
+        att = '' if not b['attention'] else groups.parse_attention(b['attention'])
+    cs.assign([cid], group_id=gid, attention=att, by='web')
+    st.log_action(actor='human', action='group', chat_id=cid, content=f'网页归组 group={gid} attention={att}')
+    return _json(cs.view([cid])[0])
+
+
+@api
+def jobs_api(request: Request):
+    """例行任务: 每个任务的开关、上次结果、下次时间, 以及最近的运行记录。"""
+    from .. import jobs
+    st, cfg, now = Storage(), load_config(), datetime.now()
+    store = jobs.JobStore(st)
+    rows = []
+    for job in jobs.JOBS:
+        nxt = jobs.next_time(job, cfg, now)
+        rows.append({'name': job.name, 'title': job.title, 'kind': job.kind, 'once': job.once,
+                     'enabled': job.when(cfg) is not None, 'next': nxt, 'last': jobs.describe(store.last(job.name))})
+    return _json({'jobs': rows, 'runs': [jobs.describe(r) for r in store.log(limit=int(request.query_params.get('limit', 30)))],
+                  'backfill': store.get_state('backfill'), 'bootstrap': store.get_state('bootstrap')})
+
+
+@api
+def job_run(request: Request):
+    from .. import jobs
+    name = request.path_params['name']
+    if not jobs.get(name):
+        raise ValueError('没有这个例行任务')
+    return control_wait(f'job:{name}')
+
+
+@api
+def proposals(request: Request):
+    """最近的整理方案和每条的状态。"""
+    from ..organize import OrganizeStore
+    store = OrganizeStore(Storage())
+    return _json([{'id': p.id, 'trigger': p.trigger, 'status': p.status, 'summary': p.summary, 'created_at': p.created_at,
+                   'items': [{'seq': i.seq, 'kind': i.kind, 'title': i.title, 'reason': i.reason, 'status': i.status,
+                              'error': i.error} for i in store.items(p.id)]}
+                  for p in store.list(int(request.query_params.get('limit', 10)))])
+
+
+@api
+def proposal_item(request: Request):
+    """POST {action: apply|reject|undo, items: [编号]}: 本人在网页上同意、放弃或撤销。"""
+    from .. import organize
+    st, pid, b = Storage(), request.path_params['proposal_id'], request.state.body
+    store = organize.OrganizeStore(st)
+    if not store.get(pid):
+        raise ValueError('没有这个方案')
+    action, seqs = b.get('action'), [int(x) for x in b.get('items') or []]
+    if action == 'reject':
+        res = [(s, '已放弃') for s in seqs] if store.reject(pid, seqs) else []
+    elif action in ('apply', 'undo'):
+        ops = organize.FeishuOps(_lark())
+        res = store.apply(pid, seqs, ops) if action == 'apply' else store.undo(pid, ops)
+    else:
+        raise ValueError('不支持的操作')
+    st.log_action(actor='human', action='organize', content=f'网页{action} 整理方案 #{pid}: {res}')
+    return _json({'ok': True, 'results': [{'seq': s, 'result': r} for s, r in res]})
 
 
 @api
@@ -389,19 +533,34 @@ def _git(home: Path, *args) -> str:
 
 @api
 def memory(request: Request):
+    """记忆文件(含 archive/ 里的归档)、开头的字段和检查结果。MEMORY.md 由代码生成, 只读。"""
+    from .. import memory as mem
     home = _agent_home()
-    files = [{'name': p.name, 'content': p.read_text(encoding='utf-8'), 'mtime': datetime.fromtimestamp(p.stat().st_mtime)}
-             for p in sorted((home / 'memory').glob('*.md'), key=lambda p: (p.name != 'MEMORY.md', p.name))]
-    return _json(files)
+    base = home / 'memory'
+    paths = sorted(base.glob('*.md'), key=lambda p: (p.name != 'MEMORY.md', p.name)) + sorted((base / 'archive').glob('*.md'))
+    files = []
+    for p in paths:
+        text = p.read_text(encoding='utf-8')
+        name = p.relative_to(base).as_posix()
+        files.append({'name': name, 'content': text, 'mtime': datetime.fromtimestamp(p.stat().st_mtime),
+                      'meta': mem.parse(text)[0], 'archived': name.startswith('archive/'), 'generated': name == mem.INDEX})
+    issues = [{'level': l, 'file': f, 'message': m} for l, f, m in mem.lint(home)] if base.is_dir() else []
+    return _json({'files': files, 'issues': issues})
 
 
 @api
 def memory_item(request: Request):
+    from ..memory import INDEX
     name = request.path_params['name']
-    if not MEMORY_NAME.match(name):
+    if not MEMORY_NAME.match(name) or '..' in name:
         raise ValueError('文件名不合法')
+    if name == INDEX:
+        raise ValueError('MEMORY.md 由程序按各文件的字段生成, 改记忆请改对应文件')
     home = _agent_home()
     path = home / 'memory' / name
+    if not path.resolve().is_relative_to((home / 'memory').resolve()):
+        raise ValueError('文件名不合法')
+    path.parent.mkdir(parents=True, exist_ok=True)
     if request.method == 'DELETE':
         path.unlink(missing_ok=True)
         commit_agent_home(home, f'网页删除 memory/{name}')
@@ -466,6 +625,11 @@ def control(request: Request):
     action = request.state.body.get('action')
     if action not in ('interrupt', 'clear'):
         raise ValueError('不支持的操作')
+    return control_wait(action)
+
+
+def control_wait(action: str):
+    """交给 daemon 的控制请求, 最多等 15 秒拿结果。"""
     st = Storage()
     cid = st.control_add(action)
     deadline = time.time() + 15
@@ -547,6 +711,11 @@ def create_app() -> Starlette:
         Route('/', index), Route('/console', old_console), Route('/login', login, methods=['POST']),
         Route('/api/overview', overview), Route('/api/activity', activity), Route('/api/conversations', conversations),
         Route('/api/chats', chats), Route('/api/mentions', mentions),
+        Route('/api/chats/{chat_id}/group', chat_group, methods=['PUT']),
+        Route('/api/groups', groups_api, methods=['GET', 'POST']),
+        Route('/api/groups/{group_id:int}', group_item, methods=['PUT', 'DELETE']),
+        Route('/api/jobs', jobs_api), Route('/api/jobs/{name}/run', job_run, methods=['POST']),
+        Route('/api/proposals', proposals), Route('/api/proposals/{proposal_id:int}', proposal_item, methods=['POST']),
         Route('/api/tasks', tasks, methods=['GET', 'POST']), Route('/api/tasks/{task_id:int}', task_item, methods=['GET', 'DELETE']),
         Route('/api/say', say, methods=['POST']),
         Route('/api/takeovers', takeovers, methods=['GET', 'POST']),
@@ -554,7 +723,7 @@ def create_app() -> Starlette:
         Route('/api/whitelist', whitelist, methods=['GET', 'POST']),
         Route('/api/whitelist/{user_id}', whitelist_item, methods=['DELETE']),
         Route('/api/people', people),
-        Route('/api/memory', memory), Route('/api/memory/{name}', memory_item, methods=['PUT', 'DELETE']),
+        Route('/api/memory', memory), Route('/api/memory/{name:path}', memory_item, methods=['PUT', 'DELETE']),
         Route('/api/persona', persona, methods=['GET', 'PUT']),
         Route('/api/history', history), Route('/api/history/{sha}', history_item),
         Route('/api/logs', logs), Route('/api/control', control, methods=['POST']),

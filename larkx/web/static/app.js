@@ -106,7 +106,10 @@ async function loadChats() {
 }
 const chatLabel = (id, name) => name || chatNames[id] || (id ? `会话 ${id}` : '');
 
-const KIND = { message: '消息', task: '任务', say: '终端指令', system: '维护', web: '网页' };
+const KIND = { message: '消息', task: '任务', say: '终端指令', system: '维护', report: '汇报', web: '网页' };
+const ATT = { focus: '重点关注', light: '简单关注', archive: '只存不看' };
+const RUN = { queued: '排队', running: '运行中', ok: '完成', failed: '失败', skipped: '跳过', interrupted: '中断' };
+const runTag = r => r && r.status ? h('span', { class: 'tag' + (['failed', 'interrupted'].includes(r.status) ? ' bad' : '') }, RUN[r.status] || r.status) : h('span', { class: 'muted' }, '还没跑过');
 // daemon: 不经过数字人、由 daemon 直接发的(没权限的人想唤起时的自动回复)
 const ACTOR = { agent: '数字人', daemon: '自动回复' };
 const STATUS = { pending: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消', expired: '已过期' };
@@ -228,6 +231,7 @@ async function viewOverview() {
   const tiles = h('div', { class: 'tiles' });
   $main.append(tiles);
   const now = card('现在');
+  const life = card('信息整理');
   const chartCard = card('最近 24 小时');
   const recent = card('最近的对话');
   let chartDrawn = false;
@@ -239,6 +243,17 @@ async function viewOverview() {
       tile(o.tasks_pending, '待执行任务'), tile(o.takeovers.length, '接管中'), tile(o.memory_files.length, '记忆文件'));
     put(now, h('h2', {}, '现在'), turnCard(o),
       o.takeovers.length ? h('div', { class: 'meta', style: 'margin-top:10px' }, '接管中:', o.takeovers.map(t => h('span', { class: 'tag' }, `${chatLabel(t.chat_id)} 到 ${fmt(t.until, false)}`))) : null);
+    const L = o.lifecycle || {}, att = L.attention || {}, bf = L.backfill || {}, bs = L.bootstrap || {}, m = L.memory || {};
+    const steps = [];
+    if (bf.order && !bf.done) steps.push(`回填历史中：${bf.chats_done || 0}/${bf.order.length} 个会话，已入库 ${bf.messages || 0} 条`);
+    else if (bf.done && !bs.done) steps.push(`回填完成（${bf.messages || 0} 条），正在初始化记忆` + (bs.chats ? `：${bs.next || 0}/${Math.ceil(bs.chats.length / 8)} 批` : ''));
+    put(life, h('h2', {}, '信息整理', h('span', { class: 'grow' }), h('a', { href: '#jobs', style: 'font-weight:400' }, '例行任务')),
+      h('div', { class: 'meta' }, Object.entries(ATT).map(([k, v]) => h('span', { class: 'tag' }, `${v} ${att[k] || 0}`)),
+        m.files != null ? h('span', { class: 'tag' }, `记忆 ${m.files} 个 · 待跟进 ${m.todo}`) : null,
+        h('a', { href: '#chats' }, '管理会话')),
+      steps.map(s => h('p', { class: 'sec' }, s)),
+      L.proposal ? h('p', {}, h('a', { href: '#organize' }, `整理方案 #${L.proposal.id} 有 ${L.proposal.pending} 条等你决定 →`)) : null,
+      L.jobs ? jobsTable(L.jobs.filter(j => !j.once || !(j.last && j.last.status === 'ok'))) : null);
     if (!chartDrawn) { chartCard.append(hourlyChart(o.hourly).node); chartDrawn = true; }
   });
   every(15000, async () => {
@@ -467,22 +482,38 @@ async function viewMemory() {
   const hist = card('变化记录');
   let current = null;
 
+  const issuesCard = card('检查');
   async function load() {
-    const list = await api('/api/memory');
+    const data = await api('/api/memory');
+    const list = data.files;
     if (!current && list.length) current = list[0].name;
-    put(files, h('h2', {}, '文件'), list.map(f => h('a', { href: '#memory', class: f.name === current ? 'on' : null,
-      onclick: e => { e.preventDefault(); current = f.name; load(); } }, f.name)),
+    const link = f => h('a', { href: '#memory', class: f.name === current ? 'on' : null, title: f.meta && f.meta.desc || '',
+      onclick: e => { e.preventDefault(); current = f.name; load(); } }, (f.meta && f.meta.name) || f.name.replace(/^archive\//, ''),
+      f.meta && f.meta.status ? h('span', { class: 'tag', style: 'margin-left:6px' }, f.meta.status) : null);
+    const byType = {};
+    list.filter(f => !f.archived && !f.generated).forEach(f => (byType[(f.meta && f.meta.type) || '其他'] ||= []).push(f));
+    const archived = list.filter(f => f.archived);
+    put(issuesCard, h('h2', {}, `检查（${data.issues.length}）`), data.issues.length ? h('div', { class: 'list' }, data.issues.map(i =>
+      h('div', { class: 'item' }, h('span', { class: 'tag' + (i.level === 'error' ? ' bad' : '') }, i.level === 'error' ? '错误' : '提醒'), ' ', h('b', {}, i.file), ' ', i.message)))
+      : h('div', { class: 'empty' }, '没有问题'));
+    put(files, h('h2', {}, '文件'), list.filter(f => f.generated).map(link),
+      ['我', '人', '群', '事', '其他'].filter(t => byType[t]).map(t => [h('div', { class: 'muted', style: 'margin-top:8px' }, t), byType[t].map(link)]),
+      archived.length ? [h('div', { class: 'muted', style: 'margin-top:8px' }, `归档（${archived.length}）`), archived.map(link)] : null,
       h('button', { class: 'btn small', style: 'margin-top:10px', onclick: () => {
-        const name = prompt('新文件名（以 .md 结尾）', 'notes.md');
-        if (name) act(async () => { await api(`/api/memory/${encodeURIComponent(name)}`, { method: 'PUT', body: { content: '' } }); current = name; load(); }, '已新建');
+        const name = prompt('新文件名（我.md、人-名字.md、群-群名.md、事-主题.md）', '事-新的事.md');
+        const today = new Date().toISOString().slice(0, 10);
+        const type = (name || '').startsWith('人-') ? '人' : (name || '').startsWith('群-') ? '群' : (name || '').startsWith('我') ? '我' : '事';
+        const skeleton = `---\ntype: ${type}\nname: ${(name || '').replace(/^(人|群|事)-/, '').replace(/\.md$/, '')}\ndesc: \n${type === '事' ? 'status: 进行中\ndue: \n' : ''}updated: ${today}\n---\n`;
+        if (name) act(async () => { await api(`/api/memory/${encodeURI(name)}`, { method: 'PUT', body: { content: skeleton } }); current = name; load(); }, '已新建');
       } }, '新建'));
     const f = list.find(x => x.name === current);
     if (!f) { put(editorCard, h('div', { class: 'empty' }, '还没有记忆')); return; }
-    const ta = h('textarea', { class: 'editor' }); ta.value = f.content;
-    put(editorCard, h('h2', {}, f.name, h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, '更新于 ' + fmt(f.mtime)),
-      f.name !== 'MEMORY.md' ? h('button', { class: 'btn small danger', onclick: () => confirm(`删除 ${f.name}?`) &&
-        act(async () => { await api(`/api/memory/${encodeURIComponent(f.name)}`, { method: 'DELETE' }); current = null; load(); }, '已删除') }, '删除') : null,
-      h('button', { class: 'btn small primary', onclick: () => act(async () => { await api(`/api/memory/${encodeURIComponent(f.name)}`, { method: 'PUT', body: { content: ta.value } }); loadHist(); }, '已保存') }, '保存')), ta);
+    const ta = h('textarea', { class: 'editor', readonly: f.generated }); ta.value = f.content;
+    const path = encodeURI(f.name);
+    put(editorCard, h('h2', {}, f.name, h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, f.generated ? '由程序按各文件的字段生成，只读' : '更新于 ' + fmt(f.mtime)),
+      !f.generated ? h('button', { class: 'btn small danger', onclick: () => confirm(`删除 ${f.name}?`) &&
+        act(async () => { await api(`/api/memory/${path}`, { method: 'DELETE' }); current = null; load(); }, '已删除') }, '删除') : null,
+      !f.generated ? h('button', { class: 'btn small primary', onclick: () => act(async () => { await api(`/api/memory/${path}`, { method: 'PUT', body: { content: ta.value } }); load(); loadHist(); }, '已保存') }, '保存') : null), ta);
   }
   async function loadHist() {
     const rows = await api('/api/history');
@@ -545,9 +576,140 @@ async function viewCommand() {
     h('p', { class: 'muted', style: 'margin-bottom:0' }, '这些操作也可以在飞书里发 /ai /stop、/ai /clear 完成。'));
 }
 
+// ---- 会话分组 ----
+
+async function viewChats() {
+  page('会话', h('span', { class: 'muted' }, '分组和关注度决定分身怎么对待每个会话，改了立即生效'));
+  card(null, h('div', { class: 'rule' }, '重点关注：每条都看、提炼进记忆、简报里写进展；简单关注：只挑和你有关的（@你、提到你负责的事或组关键词）；只存不看：存档可查，不进回顾和简报，按保留期清理。飞书里的免打扰不影响关注度。'));
+  const groupsCard = card('组');
+  const q = h('input', { type: 'text', placeholder: '按名字筛选', style: 'flex:1;min-width:200px' });
+  const filters = { all: '全部', focus: '重点关注', light: '简单关注', archive: '只存不看', suggested: '还没确认', muted: '飞书免打扰' };
+  let filter = 'all', rows = [], gs = { groups: [] };
+  const tabs = h('div', { class: 'row' });
+  const table = h('div');
+  card('会话', h('div', { class: 'row', style: 'margin-bottom:10px' }, tabs, q), table);
+
+  function drawGroups() {
+    const name = h('input', { type: 'text', placeholder: '新组名', style: 'width:160px' });
+    const att = attSelect('light');
+    put(groupsCard, h('h2', {}, '组', h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, `未分组 ${gs.unassigned} 个（按画像建议生效）`)),
+      gs.groups.length ? h('table', {}, h('tbody', {}, gs.groups.map(g => h('tr', {},
+        h('td', {}, h('b', {}, g.name), g.private ? h('span', { class: 'tag', style: 'margin-left:6px' }, '私人') : null),
+        h('td', {}, attSelect(g.attention, false, v => act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'PUT', body: { attention: v } }); load(); }, '已更新'))),
+        h('td', { class: 'muted' }, `${g.chats} 个会话`), h('td', { class: 'muted' }, g.keywords.join('、')),
+        h('td', {}, h('button', { class: 'btn small danger', onclick: () => confirm(`删除组「${g.name}」? 组里的会话变成未分组`) &&
+          act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'DELETE' }); load(); }, '已删除') }, '删除')))))) : h('div', { class: 'empty' }, '还没有组。初始整理时分身会给出分组方案，也可以在这里自己建。'),
+      h('div', { class: 'row', style: 'margin-top:10px' }, name, att, h('button', { class: 'btn small primary', onclick: () => name.value.trim() &&
+        act(async () => { gs = await api('/api/groups', { method: 'POST', body: { name: name.value.trim(), attention: att.value } }); load(); }, '已建组') }, '建组')));
+  }
+
+  function attSelect(value, follow = false, onchange) {
+    const s = h('select', {}, follow ? h('option', { value: '' }, typeof follow === 'string' ? follow : '跟组') : null, Object.entries(ATT).map(([k, v]) => h('option', { value: k }, v)));
+    s.value = value; if (onchange) s.addEventListener('change', () => onchange(s.value));
+    return s;
+  }
+
+  function draw() {
+    put(tabs, Object.entries(filters).map(([k, v]) => h('button', { class: 'btn small' + (filter === k ? ' primary' : ''), onclick: () => { filter = k; draw(); } }, v)));
+    const text = q.value.trim();
+    const shown = rows.filter(r => (filter === 'all' || r.attention === filter || (filter === 'suggested' && !r.confirmed) || (filter === 'muted' && r.feishu_muted))
+      && (!text || (r.name || '').includes(text)));
+    put(table, shown.length ? h('table', {}, h('thead', {}, h('tr', {}, ['会话', '组', '关注度', '30 天', '依据'].map(t => h('th', {}, t)))),
+      h('tbody', {}, shown.slice(0, 300).map(r => {
+        const g = h('select', {}, h('option', { value: 0 }, r.confirmed ? '未分组' : `未分组（建议：${r.suggested_group || '-'}）`), gs.groups.map(x => h('option', { value: x.id }, x.name)));
+        g.value = r.group_id || 0;
+        g.addEventListener('change', () => act(async () => { await api(`/api/chats/${encodeURIComponent(r.chat_id)}/group`, { method: 'PUT', body: { group_id: Number(g.value) } }); load(); }, '已调整'));
+        const followLabel = r.attention_source === '单独设置' ? '跟组' : `${r.group ? '跟组' : '按建议'}：${ATT[r.attention]}`;
+        const a = attSelect(r.attention_source === '单独设置' ? r.attention : '', followLabel, v => act(async () => {
+          await api(`/api/chats/${encodeURIComponent(r.chat_id)}/group`, { method: 'PUT', body: { attention: v } }); load(); }, '已调整'));
+        return h('tr', {},
+          h('td', {}, h('b', {}, r.name || '(未命名)'), ' ', r.chat_type === 1 ? h('span', { class: 'tag' }, r.peer_bot ? '机器人' : '私聊') : null,
+            r.feishu_pinned ? h('span', { class: 'tag' }, '置顶') : null, r.feishu_muted ? h('span', { class: 'tag' }, '免打扰') : null, r.private ? h('span', { class: 'tag' }, '私人') : null),
+          h('td', {}, g),
+          h('td', {}, a),
+          h('td', { class: 'muted' }, `${r.msgs} 条 · 你 ${r.owner_msgs} · @你 ${r.at_me}`),
+          h('td', { class: 'muted' }, r.reason));
+      }))) : h('div', { class: 'empty' }, '没有符合条件的会话'));
+  }
+
+  async function load() {
+    [rows, gs] = await Promise.all([api('/api/chats'), api('/api/groups')]);
+    drawGroups(); draw();
+  }
+  q.addEventListener('input', draw);
+  await load();
+}
+
+// ---- 整理方案 ----
+
+async function viewOrganize() {
+  page('整理', h('span', { class: 'muted' }, '分身提出的分组、飞书标签、置顶、标记、免打扰方案；你同意哪条执行哪条，都能撤销'));
+  const box = h('div');
+  $main.append(box);
+  async function load() {
+    const list = await api('/api/proposals');
+    if (!list.length) { put(box, h('section', { class: 'card' }, h('div', { class: 'empty' }, '还没有整理方案。初始化记忆后分身会提一份，之后每周一一份；也可以在飞书里让它「整理一下我的会话」。'))); return; }
+    put(box, list.map(p => {
+      const checks = {};
+      const items = p.items.map(i => {
+        const cb = i.status === 'pending' ? h('input', { type: 'checkbox', checked: true }) : null;
+        if (cb) checks[i.seq] = cb;
+        const tag = { applied: '已执行', failed: '失败', rejected: '已放弃', undone: '已撤销' }[i.status];
+        return h('div', { class: 'item' }, h('div', { class: 'meta' }, cb, h('b', {}, `${i.seq}.`), h('span', { class: 'tag' }, { group: '分组', label: '飞书标签', pin: '置顶', unpin: '取消置顶', pin_order: '置顶排序', flag: '标记', mute: '免打扰' }[i.kind] || i.kind),
+          tag ? h('span', { class: 'tag' + (i.status === 'failed' ? ' bad' : '') }, tag) : null),
+          h('div', { class: 'body' }, i.title), i.reason ? h('div', { class: 'muted' }, i.reason) : null, i.error ? h('div', { class: 'muted' }, i.error) : null);
+      });
+      const selected = () => Object.entries(checks).filter(([, c]) => c.checked).map(([s]) => Number(s));
+      const run = (action, msg) => act(async () => {
+        const r = await api(`/api/proposals/${p.id}`, { method: 'POST', body: { action, items: action === 'undo' ? [] : selected() } }); load();
+        return r;
+      }, r => `${msg}: ${r.results.length} 条`);
+      const pending = Object.keys(checks).length, applied = p.items.some(i => i.status === 'applied');
+      return h('section', { class: 'card' },
+        h('h2', {}, `#${p.id} ${{ init: '初始整理', weekly: '每周整理', manual: '整理' }[p.trigger] || '整理'}`, h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, fmt(p.created_at))),
+        p.summary ? h('p', { class: 'sec', style: 'margin-top:0' }, p.summary) : null,
+        h('div', { class: 'list' }, items),
+        h('div', { class: 'row', style: 'margin-top:12px' }, h('div', { style: 'flex:1' }),
+          pending ? h('button', { class: 'btn', onclick: () => run('reject', '已放弃') }, '放弃所选') : null,
+          pending ? h('button', { class: 'btn primary', onclick: () => confirm(`执行所选的 ${selected().length} 条? 会改你飞书里的置顶、标记、标签、免打扰`) && run('apply', '已执行') }, '执行所选') : null,
+          applied ? h('button', { class: 'btn danger', onclick: () => confirm('撤销这个方案里已执行的全部条目?') && run('undo', '已撤销') }, '撤销已执行') : null));
+    }));
+  }
+  await load();
+}
+
+// ---- 例行任务 ----
+
+function jobsTable(jobs, refresh) {
+  return h('table', {}, h('tbody', {}, jobs.map(j => h('tr', {},
+    h('td', {}, h('b', {}, j.title), h('div', { class: 'muted mono', style: 'font-size:12px' }, j.name)),
+    h('td', {}, j.enabled ? runTag(j.last) : h('span', { class: 'tag' }, '已关闭')),
+    h('td', { class: 'muted' }, j.last && j.last.created_at ? `上次 ${fmt(j.last.created_at)}` : ''),
+    h('td', { class: 'muted' }, j.once ? '一次性' : j.next ? `下次 ${fmt(j.next)}` : ''),
+    h('td', { class: 'muted', style: 'max-width:420px' }, j.last ? (j.last.error || j.last.summary || '').slice(0, 120) : ''),
+    h('td', {}, h('button', { class: 'btn small', onclick: () => confirm(`现在运行「${j.title}」?`) &&
+      act(async () => { const r = await api(`/api/jobs/${j.name}/run`, { method: 'POST' }); refresh && refresh(); return r; }, r => r.result) }, '立即运行'))))));
+}
+
+async function viewJobs() {
+  page('例行任务', h('span', { class: 'muted' }, '回顾、简报、整理、清理……每次运行都有记录'));
+  const top = card('任务');
+  const log = card('运行记录');
+  async function load() {
+    const d = await api('/api/jobs');
+    put(top, h('h2', {}, '任务'), jobsTable(d.jobs, load));
+    put(log, h('h2', {}, '运行记录'), d.runs.length ? h('table', {}, h('tbody', {}, d.runs.map(r => h('tr', {},
+      h('td', { class: 'muted', style: 'white-space:nowrap' }, fmt(r.created_at)), h('td', {}, r.job), h('td', {}, runTag(r)),
+      h('td', { class: 'muted' }, r.trigger === 'manual' ? '手动' : r.trigger === 'chain' ? '接续' : ''),
+      h('td', {}, clamp(r.error || r.summary || '')))))) : h('div', { class: 'empty' }, '还没有运行记录'));
+  }
+  every(15000, load);
+}
+
 // ---- 路由 ----
 
-const VIEWS = { overview: viewOverview, conversations: viewConversations, activity: viewActivity, tasks: viewTasks,
+const VIEWS = { overview: viewOverview, conversations: viewConversations, chats: viewChats, organize: viewOrganize, jobs: viewJobs,
+  activity: viewActivity, tasks: viewTasks,
   takeovers: viewTakeovers, whitelist: viewWhitelist, memory: viewMemory, persona: viewPersona, logs: viewLogs, command: viewCommand };
 
 async function route() {

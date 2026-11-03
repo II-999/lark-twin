@@ -332,7 +332,10 @@ def profile_all(client, storage, owner_id: str, now: float = None) -> dict:
         peer_bot = old.peer_bot if old and old.peer_bot in (0, 1) else -1
         if chat_type == 1 and peer and peer_bot == -1 and peer != str(owner_id):
             try:
-                peer_bot = 1 if client.is_bot(peer) else 0
+                bot = client.is_bot(peer)
+                # LarkClient 查失败时按真人返回且不记住: 这时保持未知, 下次画像再查, 免得一次失败就记成真人
+                known = getattr(client, '_bots', None)
+                peer_bot = (1 if bot else 0) if known is None or str(peer) in known else -1
             except Exception:
                 pass
         remind = (ch.get('userSetting') or {}).get('isRemind', ch.get('isRemind'))

@@ -166,3 +166,17 @@ def test_chats_and_messages_filters(st, monkeypatch, capsys):
     margs = argparse.Namespace(chat_id='g1', anchor=None, since='1d', limit=50, json=True)
     assert cli.cmd_messages(margs) == 0
     assert [r['msg_id'] for r in json.loads(capsys.readouterr().out)] == ['m1']
+
+
+def test_failed_bot_lookup_stays_unknown(st):
+    class Client:
+        _bots = {}
+        def api(self, name, data=None):
+            return {}
+        def is_bot(self, uid):
+            return False        # 查失败: 按真人返回, 但没记进 _bots
+        def get_user_name(self, uid, cid):
+            return '某机器人'
+    _msg(st, 'm1', 'p9', '900', chat_type=1)
+    groups.profile_all(Client(), st, OWNER)
+    assert groups.ChatStore(st).profile('p9').peer_bot == -1
