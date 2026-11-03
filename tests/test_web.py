@@ -88,3 +88,19 @@ def test_non_json_body_is_ignored(client):
     assert r.status_code == 400 and r.json()['error'] == '内容为空'
     r = client.post('/api/say', content=b'text=hi', headers={'Content-Type': 'application/x-www-form-urlencoded', 'X-Larkx': '1'})
     assert r.status_code == 400
+
+
+def test_ack_reaction_is_not_a_sent_message(client):
+    """触发时 daemon 在那条消息上加的表情回复只记进动态: 不算数字人发出的消息, 不能撤回, 也不当成那一轮的回复。"""
+    from datetime import datetime
+    from larkx.storage import Storage
+    st = Storage()
+    st.inbox_add('31', 'c1', {'msg': {'msg_id': '31', 'content': '/ai 在吗'}, 'body': '在吗'})
+    st.log_action(actor='daemon', action='ack_reaction', chat_id='c1', msg_id='31', content='OK', turn_kind='message', turn_ref='31')
+    st.log_action(actor='daemon', action='ack_reaction', chat_id='c1', msg_id='32', content='OK', ok=0, error='x',
+                  turn_kind='message', turn_ref='32')
+    auth = {'Authorization': f'Bearer {web.get_token()}'}
+    rows = client.get('/api/activity', headers=auth).json()
+    assert [(r['actor'], r['action'], r['recalled']) for r in rows] == [('daemon', 'ack_reaction', False)] * 2
+    assert [c['replies'] for c in client.get('/api/conversations', headers=auth).json()] == [[]]
+    assert web._hourly(st)[-1]['sent'] == 0 and st.count_actions('agent', ('send', 'forward'), datetime(2000, 1, 1)) == 0

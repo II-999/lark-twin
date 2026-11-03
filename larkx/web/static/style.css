@@ -148,6 +148,16 @@ td .body { margin: 0; }
 .avatar { width: 36px; height: 36px; border-radius: 50%; flex: none; object-fit: cover; background: var(--surface-2); }
 .avatar.ph { display: inline-flex; align-items: center; justify-content: center; color: var(--text-secondary); font-weight: 600; }
 
+/* 设置 */
+.switch { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; font-weight: 500; }
+.switch input, .opt input { margin-top: 4px; flex: none; }
+.opt { display: flex; gap: 8px; align-items: flex-start; padding: 2px 0; cursor: pointer; }
+.note {
+  margin-top: 14px; padding: 10px 12px; border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 9%, transparent); border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+}
+.note p { margin: 6px 0 0; color: var(--text-secondary); }
+
 .split { display: grid; grid-template-columns: 220px 1fr; gap: 16px; }
 .files a { display: block; padding: 6px 10px; border-radius: 8px; color: var(--text-secondary); }
 .files a.on, .files a:hover { background: var(--surface-2); color: var(--text-primary); }

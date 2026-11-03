@@ -3,8 +3,13 @@ from datetime import datetime
 from sqlalchemy import create_engine, desc, func, or_
 from sqlalchemy.orm import sessionmaker
 from ..config import inside_twin, load_config
-from .models import (Action, AgentSession, Base, CatchupMark, Chat, Control, InboxItem, Message, Takeover, Task,
+from .models import (Action, AgentSession, Base, CatchupMark, Chat, Control, InboxItem, Message, Setting, Takeover, Task,
                      WhitelistEntry)
+
+# 触发时先回的表情: 固定用 OK(👌)
+ACK_REACTION = 'OK'
+# 先回表情的范围: owner 只对本人自己发的 /ai 消息, all 所有触发数字人的消息(包括白名单里的人)
+ACK_SCOPES = ('owner', 'all')
 
 
 def _json_default(o):
@@ -510,3 +515,53 @@ class Storage:
             return n > 0
         finally:
             s.close()
+
+    # ---- 网页上的设置 ----
+    # 和白名单一样: daemon 每次用到时现查, 网页改了立即生效, 不用重启; 只有本人能改, 数字人的会话里调用会被拒绝
+
+    def setting_get(self, key: str, default=None):
+        s = self.Session()
+        try:
+            row = s.get(Setting, key)
+        finally:
+            s.close()
+        if not row:
+            return default
+        try:
+            return json.loads(row.value)
+        except ValueError:
+            return default
+
+    def setting_set(self, key: str, value):
+        if inside_twin():
+            raise PermissionError('数字人不能修改设置, 只有本人能改')
+        s = self.Session()
+        try:
+            row = s.get(Setting, key)
+            if not row:
+                row = Setting(key=key)
+                s.add(row)
+            row.value = json.dumps(value, ensure_ascii=False)
+            s.commit()
+        finally:
+            s.close()
+
+    def ack_reaction(self) -> dict:
+        """触发时先回一个表情的设置: {'enabled': 开没开(默认关), 'scope': ACK_SCOPES 之一(默认 owner)}。"""
+        v = self.setting_get('ack_reaction')
+        v = v if isinstance(v, dict) else {}
+        return {'enabled': v.get('enabled') is True, 'scope': v.get('scope') if v.get('scope') in ACK_SCOPES else 'owner'}
+
+    def set_ack_reaction(self, enabled=None, scope=None) -> dict:
+        """改其中一项或两项, 没给的不变; 返回改后的设置。"""
+        cur = self.ack_reaction()
+        if enabled is not None:
+            if not isinstance(enabled, bool):
+                raise ValueError('enabled 只能是 true 或 false')
+            cur['enabled'] = enabled
+        if scope is not None:
+            if scope not in ACK_SCOPES:
+                raise ValueError(f'scope 只能是 {" 或 ".join(ACK_SCOPES)}')
+            cur['scope'] = scope
+        self.setting_set('ack_reaction', cur)
+        return cur

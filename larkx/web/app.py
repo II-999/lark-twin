@@ -23,7 +23,7 @@ from .. import service, state
 from .. import whitelist as wl
 from ..agent.home import commit_agent_home
 from ..config import DATA_DIR, load_config
-from ..storage import Storage
+from ..storage import ACK_REACTION, Storage
 from ..storage.models import Action, InboxItem, Message
 
 STATIC = Path(__file__).parent / 'static'
@@ -379,6 +379,38 @@ def people(request: Request):
                                               is_owner=p['user_id'] == me) for p in found]})
 
 
+# ---- 设置 ----
+# 存在库里(settings 表), daemon 每条消息现查, 改了下一条就生效, 不用重启。数字人没有网页令牌, 存储层也拦着它
+
+ACK_SCOPE_TEXT = {'owner': '只对本人自己发的 /ai 消息', 'all': '所有触发数字人的消息'}
+
+
+def _settings_state(st: Storage) -> dict:
+    # inbox_max_age: 超过这个秒数的旧消息不交给数字人, 也不加表情(页面上的说明用)
+    return {'ack_reaction': dict(st.ack_reaction(), reaction=ACK_REACTION), 'inbox_max_age': load_config()['inbox_max_age']}
+
+
+@api
+def settings(request: Request):
+    st = Storage()
+    if request.method == 'PUT':
+        b = request.state.body
+        unknown = sorted(set(b) - {'ack_reaction'})
+        if unknown or not b:
+            raise ValueError(f'不认识的设置: {", ".join(unknown)}' if unknown else '没有要改的设置')
+        ack = b['ack_reaction']
+        if not isinstance(ack, dict) or not ack or set(ack) - {'enabled', 'scope'}:
+            raise ValueError('ack_reaction 只能改 enabled、scope')
+        before = st.ack_reaction()
+        after = st.set_ack_reaction(ack.get('enabled'), ack.get('scope'))
+        if after != before:
+            st.log_action(actor='human', action='setting',
+                          content=f'网页设置: 触发时先回 {ACK_REACTION} 表情{"打开" if after["enabled"] else "关闭"}, '
+                                  f'范围: {ACK_SCOPE_TEXT[after["scope"]]}')
+        return _json(dict(_settings_state(st), ok=True))
+    return _json(_settings_state(st))
+
+
 def _agent_home() -> Path:
     return Path(load_config()['agent_home'])
 
@@ -554,6 +586,7 @@ def create_app() -> Starlette:
         Route('/api/whitelist', whitelist, methods=['GET', 'POST']),
         Route('/api/whitelist/{user_id}', whitelist_item, methods=['DELETE']),
         Route('/api/people', people),
+        Route('/api/settings', settings, methods=['GET', 'PUT']),
         Route('/api/memory', memory), Route('/api/memory/{name}', memory_item, methods=['PUT', 'DELETE']),
         Route('/api/persona', persona, methods=['GET', 'PUT']),
         Route('/api/history', history), Route('/api/history/{sha}', history_item),

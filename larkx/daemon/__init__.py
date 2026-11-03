@@ -15,7 +15,7 @@ from ..agent.home import commit_agent_home
 from ..config import CREDENTIALS_PATH, DATA_DIR, load_config, with_signature
 from ..notify import Notifier
 from ..protocol import AuthExpired, LarkAuth, LarkClient
-from ..storage import Storage
+from ..storage import ACK_REACTION, Storage
 from ..event_rules import RuleStore
 from .listener import Listener
 from .triggers import (build_prompt, build_say_prompt, build_system_prompt, build_task_prompt, denied_attempt,
@@ -82,6 +82,7 @@ class Daemon:
         self._ws_down_at = None  # 长连接这次断开的时间(重连失败不改), 重新连上后清掉
         self._ws_gaps = []       # 最近的断线窗口 [(断开时间, 重新连上的时间)]
         self._catchup_wake = asyncio.Event()  # 长连接重新连上时叫醒补收循环, 马上补收一轮
+        self._ack_tasks = set()  # 后台正在加的表情回复(留着引用, 免得任务被回收)
 
     def _banner(self):
         t = self.cfg.get('triggers') or {}
@@ -94,6 +95,9 @@ class Daemon:
         deny = self._deny_text()
         print(f'  没权限的人唤起时回复: {deny or "(不回复)"}'
               + (f'  同一会话同一人 {self.cfg["deny_reply_cooldown"]}s 内只回一次' if deny else ''), flush=True)
+        ack = self.storage.ack_reaction()
+        scope = '只对本人自己发的 /ai' if ack['scope'] == 'owner' else '所有触发数字人的消息'
+        print(f'  触发时先回 {ACK_REACTION} 表情: {f"打开, {scope}" if ack["enabled"] else "关"}(网页"设置"页改, 立即生效)', flush=True)
         print('─' * 56, flush=True)
 
     async def run(self):
@@ -190,7 +194,7 @@ class Daemon:
             return
         if not rest:
             return
-        await self._enqueue_message(msg, rest, chat_name, sender_name, is_owner)
+        await self._enqueue_message(msg, rest, chat_name, sender_name, is_owner, ack=True)
 
     def _owner_name(self) -> str:
         """本人在飞书上的名字(LARKX_DENY_REPLY 里的 {owner}); 查到一次就记住。"""
@@ -241,17 +245,61 @@ class Daemon:
         except Exception as e:
             logger.exception(f'没权限回复出错: {e!r}')
 
-    async def _enqueue_message(self, msg, body, chat_name, sender_name, is_owner, note=''):
+    async def _enqueue_message(self, msg, body, chat_name, sender_name, is_owner, note='', ack=False):
         if not body:
             return
         if msg.get('msg_id') and self.storage.inbox_seen(msg['msg_id']):
             return
+        if ack:
+            # 网页上打开了"触发时先回一个表情"时先在后台加上, 不等它, 接着排队
+            self._ack(msg, is_owner)
         # 先落库再排队: daemon 中途重启时, 没处理完的消息下次启动接着处理
         slim = {k: msg.get(k) for k in MSG_FIELDS}
         inbox_id = self.storage.inbox_add(slim['msg_id'] or '', str(msg['chat_id']),
                                           {'msg': slim, 'body': body, 'chat_name': chat_name, 'sender_name': sender_name,
                                            'is_owner': is_owner, 'note': note})
         await self.inbox.put(self._message_event(slim, body, chat_name, sender_name, is_owner, inbox_id, note=note))
+
+    def _ack(self, msg, is_owner):
+        """触发时先回一个表情: 网页"设置"页打开了, 并且在范围里(只对本人自己发的 /ai, 或所有触发数字人的消息), 就以本人身份
+        在触发的这条消息上加一个 OK(👌), 表示收到了。设置每条现查, 网页改了下一条就生效。在后台线程里加, 不耽误排队; 失败只打 warning。
+
+        只有正常交给数字人的那一支会调到这里: 接管中的会话、没权限被拒的、超过 LARKX_INBOX_MAX_AGE 的旧消息、纯控制命令
+        (/stop、/clear、/takeover、/release 后面没有正文)、定时任务和事件任务都不加。已经在收件箱里的(重复推送、补收又收到)
+        在调用前就返回了, 重启后接着处理的(_restore_inbox)也不经过这里, 所以每条只加一次。
+
+        加表情会把那条消息标成已读(对方能看到已读回执, 删掉表情也撤不回), 所以默认关、范围默认只对本人。实测(见
+        LarkClient.add_reaction): 加在本人自己的消息上, 会话里别人的消息都还是未读, 本人的已读位置也不动; 加在别人的消息上,
+        那一条马上已读, 还可能把本人在这个会话的已读位置推到最新, 之后别人新发的也成了已读(三次里出现过一次)。
+        """
+        msg_id = str(msg.get('msg_id') or '')
+        if not msg_id:
+            return
+        try:
+            conf = self.storage.ack_reaction()
+        except Exception as e:
+            logger.warning(f'[表情回复] 读设置失败, 消息 {msg_id} 不加: {e!r}')
+            return
+        if not conf['enabled'] or (conf['scope'] == 'owner' and not is_owner):
+            return
+        task = asyncio.create_task(self._add_ack(str(msg['chat_id']), msg_id))
+        self._ack_tasks.add(task)
+        task.add_done_callback(self._ack_tasks.discard)
+
+    async def _add_ack(self, chat_id, msg_id):
+        ok, error = 1, ''
+        try:
+            await asyncio.to_thread(self.client.add_reaction, msg_id, ACK_REACTION)
+            logger.info(f'[表情回复] 在消息 {msg_id} 上加了 {ACK_REACTION}')
+        except Exception as e:
+            ok, error = 0, str(e)[:300]
+            logger.warning(f'[表情回复] 在消息 {msg_id} 上加 {ACK_REACTION} 失败: {e!r}')
+        try:
+            # 记进动态(网页上显示成"表情回复"); 不是发出的消息, 不算进发出的条数和发送上限, 也不能撤回
+            self.storage.log_action(actor='daemon', action='ack_reaction', chat_id=chat_id, msg_id=msg_id, content=ACK_REACTION,
+                                    ok=ok, error=error, turn_kind='message', turn_ref=msg_id)
+        except Exception as e:
+            logger.warning(f'[表情回复] 记录动作失败: {e!r}')
 
     async def _finish_takeovers(self):
         """收尾已到期或被本人结束的接管: 让数字人在本人私聊发一份总结。"""

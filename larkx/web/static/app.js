@@ -107,7 +107,7 @@ async function loadChats() {
 const chatLabel = (id, name) => name || chatNames[id] || (id ? `会话 ${id}` : '');
 
 const KIND = { message: '消息', task: '任务', say: '终端指令', system: '维护', web: '网页' };
-// daemon: 不经过数字人、由 daemon 直接发的(没权限的人想唤起时的自动回复)
+// daemon: 不经过数字人、由 daemon 直接做的(没权限的人想唤起时的自动回复、触发时在那条消息上加的表情回复)
 const ACTOR = { agent: '数字人', daemon: '自动回复' };
 const STATUS = { pending: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消', expired: '已过期' };
 
@@ -298,7 +298,7 @@ async function viewActivity() {
       h('tbody', {}, rows.map(r => h('tr', { class: 'act' },
         h('td', { class: 'muted nowrap' }, fmt(r.time)),
         h('td', { class: 'nowrap' }, ACTOR[r.actor] || '本人', r.turn_kind ? h('div', { class: 'muted', style: 'font-size:11.5px' }, KIND[r.turn_kind] || r.turn_kind) : null),
-        h('td', { class: 'nowrap' }, { send: '发消息', forward: '转发', recall: '撤回', whitelist: '白名单', deny_reply: '没权限回复' }[r.action] || r.action),
+        h('td', { class: 'nowrap' }, { send: '发消息', forward: '转发', recall: '撤回', whitelist: '白名单', setting: '设置', deny_reply: '没权限回复', ack_reaction: '表情回复' }[r.action] || r.action),
         h('td', { style: 'min-width:120px;max-width:220px' }, h('div', { class: 'lines2', title: chatLabel(r.chat_id, r.chat_name) }, chatLabel(r.chat_id, r.chat_name))),
         h('td', { style: 'width:50%', class: r.recalled ? 'muted' : null }, clamp(r.content)),
         h('td', { class: 'nowrap' }, r.ok ? '✓' : h('span', { class: 'tag bad', title: r.error }, '✗ ' + (r.error || '').slice(0, 40))),
@@ -449,6 +449,47 @@ async function viewWhitelist() {
   every(20000, async () => { st = await api('/api/whitelist'); draw(); });
 }
 
+// ---- 设置 ----
+
+const ACK_SCOPES = [
+  ['owner', '只对你自己发的 /ai 消息'],
+  ['all', '所有触发数字人的消息（也包括白名单里的人、群里 @ 你唤起数字人的）'],
+];
+
+async function viewSettings() {
+  page('设置', h('span', { class: 'muted' }, '改了立即生效，不用重启；数字人自己改不了'));
+  const c = card(null);
+  let st = await api('/api/settings');
+  const save = (patch, msg) => act(async () => {
+    st = await api('/api/settings', { method: 'PUT', body: { ack_reaction: patch } });
+  }, msg).finally(draw);
+  const warnAll = '范围是“所有触发数字人的消息”时，别人唤起数字人的那条消息会马上变成已读，对方能看到，撤不回。确定?';
+
+  function draw() {
+    const a = st.ack_reaction;
+    const toggle = h('input', { type: 'checkbox', checked: a.enabled, onchange: e => {
+      const on = e.target.checked;
+      if (on && a.scope === 'all' && !confirm(warnAll)) { draw(); return; }
+      save({ enabled: on }, on ? '已打开' : '已关闭');
+    } });
+    const scopes = ACK_SCOPES.map(([v, label]) => h('label', { class: 'opt' },
+      h('input', { type: 'radio', name: 'ack-scope', value: v, checked: a.scope === v, onchange: () => {
+        if (v === 'all' && a.enabled && !confirm(warnAll)) { draw(); return; }
+        save({ scope: v }, '已保存');
+      } }), h('span', {}, label)));
+    put(c, h('h2', {}, '触发时先回一个表情', h('span', { class: 'grow' }),
+        h('span', { class: 'pill' + (a.enabled ? ' good' : '') }, h('i'), a.enabled ? '已打开' : '已关闭')),
+      h('label', { class: 'switch' }, toggle, h('span', {}, `数字人被触发时，先以你的身份在那条消息上回一个 👌（${a.reaction}）表情，表示收到了`)),
+      h('div', { style: 'margin-top:12px' }, h('div', { class: 'sec', style: 'font-size:12px;margin-bottom:2px' }, '范围'), scopes),
+      h('div', { class: 'note' },
+        h('b', {}, '⚠️ 加表情会把那条消息标成已读：发消息的人马上能看到你“已读”，删掉表情也撤不回。'),
+        h('p', {}, '只对你自己发的 /ai：实测在你自己的消息上加表情，会话里别人的消息（之前没看的、之后新发的）都还是未读，你的已读位置也不动。'),
+        h('p', {}, '所有触发数字人的消息：白名单里的人、群里 @ 你唤起数字人的那条会马上变成已读。实测还有一次加完约 2 秒后，你在这个会话的已读位置跳到了最新，之后别人新发的消息也一起变成已读、对方能看到；重复两次没再出现，可能是当时飞书客户端打开了这个会话，但不能排除是加表情引起的。')),
+      h('p', { class: 'muted', style: 'margin-bottom:0' }, `表情固定用 OK（👌）。接管中的会话、没权限被拒的、超过 ${dur(st.inbox_max_age)}的旧消息、只有控制命令的（/stop、/clear、/takeover、/release 后面没写内容）、定时任务和事件任务都不加；同一条消息只加一次。加过的在“动态”里显示为“表情回复”，不算发出的消息。`));
+  }
+  draw();
+}
+
 // ---- 记忆 / 人设 ----
 
 function diffView(text) {
@@ -548,7 +589,7 @@ async function viewCommand() {
 // ---- 路由 ----
 
 const VIEWS = { overview: viewOverview, conversations: viewConversations, activity: viewActivity, tasks: viewTasks,
-  takeovers: viewTakeovers, whitelist: viewWhitelist, memory: viewMemory, persona: viewPersona, logs: viewLogs, command: viewCommand };
+  takeovers: viewTakeovers, whitelist: viewWhitelist, settings: viewSettings, memory: viewMemory, persona: viewPersona, logs: viewLogs, command: viewCommand };
 
 async function route() {
   timers.forEach(clearInterval); timers = [];

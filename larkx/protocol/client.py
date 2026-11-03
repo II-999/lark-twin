@@ -511,6 +511,30 @@ class LarkClient:
                 out[c] = self._message_dict(v, c, False, 0)
         return out
 
+    def add_reaction(self, msg_id: str, reaction_type: str = 'OK') -> int:
+        """以本人身份在一条消息上加一个表情回复(reactions.PutReactionRequest)。reaction_type 是飞书的表情 key, 如 OK(👌)、
+        THUMBSUP(👍)、DONE(✅), 全部 key 用 reactions.PullEmojiResourcesByEmojiKeysRequest 查。
+        返回这条消息上这种表情的个数; 请求失败、服务端拒绝时抛异常。同一个人重复加同一种表情不会多出一个。
+
+        注意, 加在别人的消息上会标已读。实测(2026-11-03, 机器人私聊 7690645243804273642, 不开长连接):
+        - 别人的消息: 那一条马上变成已读(PullMessageMeReadStateRequest False → True, 发消息的人能看到已读回执),
+          删掉表情也撤不回。本人的已读位置: 机器人连发 A、B 后在 A 上加, 一次约 2 秒后推到了会话最新(B 也成了已读,
+          对方能看到); 另两次(其中一次前提和它完全一样)等了 20 秒都没动, A 前后没读的消息也都还是未读。推到最新那次
+          可能是飞书客户端同时打开了会话, 但不能排除是加表情引起的。
+        - 本人自己的消息: 什么都不变, 本人的已读位置不动, 会话里别人的消息(之前没读的、之后新发的)都还是未读。
+        所以 daemon 的"触发时先回一个表情"默认关, 打开后范围默认只对本人自己发的 /ai。
+        """
+        return self._reaction('reactions.PutReactionRequest', msg_id, reaction_type)
+
+    def delete_reaction(self, msg_id: str, reaction_type: str = 'OK') -> int:
+        """撤掉本人在这条消息上的这种表情回复(reactions.DeleteReactionRequest), 返回剩下的个数; 失败时抛异常。"""
+        return self._reaction('reactions.DeleteReactionRequest', msg_id, reaction_type)
+
+    def _reaction(self, req: str, msg_id: str, reaction_type: str) -> int:
+        # 消息不存在、表情 key 不对时网关回 HTTP 400, _gateway_post 抛异常
+        resp = self.api(req, {'messageId': str(msg_id), 'reactionType': str(reaction_type)}) or {}
+        return int(resp.get('count') or 0)
+
     def get_messages(self, message_ids) -> dict:
         """按 id 只读地取消息(messages.PullMessagesByIdsRequest, 不改变已读状态), {msg_id: 消息}, 格式同 pull_history;
         取不到的(不存在、本人看不到)不在里面。"""
