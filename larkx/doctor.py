@@ -158,9 +158,12 @@ def check_jobs(cfg, storage=None):
         ran += 1
         if last.status in ('failed', 'interrupted'):
             bad.append(f'{job.title}({jobs.STATUS_NAMES[last.status]})')
-        ok = store.last(job.name, status=('ok',))
-        weekly = job.when(cfg)[2] is not None
-        if not weekly and (not ok or ok.created_at < datetime.now() - timedelta(hours=36)):
+        if job.once or job.when(cfg)[2] is not None:
+            continue  # 一次性任务和每周任务不按 36 小时判
+        recent = datetime.now() - timedelta(hours=36)
+        first = store.log(job.name, limit=1000)[-1]
+        done = store.last(job.name, status=('ok', 'skipped'))
+        if first.created_at < recent and (not done or done.created_at < recent):
             overdue.append(job.title)
     if bad:
         return _check('例行任务', WARN, '最近一次没成功: ' + '、'.join(bad), 'larkx jobs log 看原因; larkx jobs run <名字> 手动重跑')

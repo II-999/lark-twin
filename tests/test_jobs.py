@@ -174,3 +174,16 @@ def test_doctor_jobs(tmp_path):
     store = jobs.JobStore(st)
     store.fail(store.create('review', 's').id, 'x')
     assert doctor.check_jobs(cfg(), st)['level'] == 'warn'
+
+
+def test_doctor_jobs_not_overdue_when_new_or_once(tmp_path):
+    from datetime import timedelta as td
+    from larkx import doctor
+    st = Storage(f'sqlite:///{tmp_path}/n.db')
+    store = jobs.JobStore(st)
+    store.create('briefing', 'd1', status='skipped')                     # 刚装好, 今天错过了时间
+    store.start(store.create('backfill', 'once').id)                     # 一次性任务正在跑
+    assert doctor.check_jobs(cfg(), st)['level'] == 'ok'
+    old = store.create('review', 'old', status='ok')
+    store._set(old.id, created_at=datetime.now() - td(days=3))
+    assert '每日回顾' in doctor.check_jobs(cfg(), st)['detail']          # 3 天前跑过、之后再没完成
