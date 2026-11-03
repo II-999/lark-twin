@@ -136,6 +136,13 @@ larkx task cancel <id>
 - 时间格式：`--in` 支持 `30m`、`2h`、`1d`、`1h30m`；`--at` 支持 `2026-10-22 09:00`、`10-22 09:00`、`09:00`（如果这个时间今天已经过了，就是明天）。
 - 任务默认关联当前会话，到点后在这个会话里通知。只有本人发起时，才能给其他会话安排任务。
 
+## 例行任务（只能看）
+
+```bash
+larkx jobs                      # 每日回顾等的上次结果和下次时间
+larkx jobs log --job review     # 运行记录
+```
+
 ## 唤起白名单（只能看，不能改）
 
 ```bash
@@ -146,4 +153,4 @@ larkx whitelist list --json    # 除本人外还有谁能唤起你；rule 是当
 
 ## 不能用的命令
 
-`larkx api`、`auth`、`listen`、`daemon`、`service`、`doctor`、`say`、`skill`、`web` 以及 `whitelist add` / `remove` 都会被拒绝。需要的能力如果上面没有，就告诉本人。
+`larkx api`、`auth`、`listen`、`daemon`、`service`、`doctor`、`say`、`skill`、`web`、`jobs run` 以及 `whitelist add` / `remove` 都会被拒绝。需要的能力如果上面没有，就告诉本人。

@@ -15,6 +15,8 @@ from .. import guest, state
 FORBIDDEN_CMD = re.compile(r'\b(larkx|lark)\s+(api|auth|listen|daemon|service|doctor|say|skill|web)\b')
 # 唤起白名单只有本人能改(可以看): 免得有人让数字人把自己加进去。CLI 和存储层也会拒绝
 WHITELIST_WRITE = re.compile(r'\b(larkx|lark)\s+whitelist\s+(add|remove)\b')
+# 例行任务只能由本人手动触发(看状态和记录可以)
+JOBS_RUN = re.compile(r'\b(larkx|lark)\s+jobs\s+run\b')
 
 
 def _deny(reason: str) -> dict:
@@ -31,6 +33,8 @@ def check_tool_use(tool_name: str, tool_input: dict):
         return '数字人不能调用 larkx api / auth / listen / daemon / service / doctor / say / skill / web; 需要的能力请用 larkx 的其他子命令'
     if tool_name == 'Bash' and WHITELIST_WRITE.search((tool_input or {}).get('command', '')):
         return '数字人不能修改唤起白名单, 只有本人能改; 想加进白名单的人请直接找本人'
+    if tool_name == 'Bash' and JOBS_RUN.search((tool_input or {}).get('command', '')):
+        return '数字人不能手动触发例行任务; larkx jobs list / log 可以看'
     return None
 
 

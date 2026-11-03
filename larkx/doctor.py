@@ -142,6 +142,33 @@ def check_service():
     return out
 
 
+def check_jobs(cfg, storage=None):
+    """例行任务: 最近一次失败或中断、该跑的每日任务超过 36 小时没完成。"""
+    from datetime import datetime, timedelta
+    from . import jobs
+    from .storage import Storage
+    store = jobs.JobStore(storage or Storage())
+    bad, overdue, ran = [], [], 0
+    for job in jobs.JOBS:
+        if job.when(cfg) is None:
+            continue
+        last = store.last(job.name)
+        if not last:
+            continue
+        ran += 1
+        if last.status in ('failed', 'interrupted'):
+            bad.append(f'{job.title}({jobs.STATUS_NAMES[last.status]})')
+        ok = store.last(job.name, status=('ok',))
+        weekly = job.when(cfg)[2] is not None
+        if not weekly and (not ok or ok.created_at < datetime.now() - timedelta(hours=36)):
+            overdue.append(job.title)
+    if bad:
+        return _check('例行任务', WARN, '最近一次没成功: ' + '、'.join(bad), 'larkx jobs log 看原因; larkx jobs run <名字> 手动重跑')
+    if overdue:
+        return _check('例行任务', WARN, '超过 36 小时没有完成: ' + '、'.join(overdue), 'larkx jobs 查看; 确认服务在运行')
+    return _check('例行任务', OK, f'{ran} 个任务有运行记录, 都正常' if ran else '还没跑过, 到点会自动运行(larkx jobs 查看计划)')
+
+
 def run(skip_model=False) -> list:
     cfg = load_config()
     checks = [check_login(), *check_config(cfg), check_agent_cli(cfg)]
@@ -150,4 +177,5 @@ def run(skip_model=False) -> list:
     checks.extend(check_service())
     checks.append(check_alert_channel(cfg))
     checks.append(check_user_skills())
+    checks.append(check_jobs(cfg))
     return checks

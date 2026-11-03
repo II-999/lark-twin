@@ -63,6 +63,7 @@ larkx takeover start <chat_id> --for 2h --goal "…"   # 让它替你聊一段
 larkx mentions --since 24h       # 最近谁找过你，有没有回
 larkx whitelist add 张三         # 让张三也能唤起数字人（list / remove 查看、移除）
 larkx audit                      # 它发过什么
+larkx jobs                       # 每日回顾等例行任务的上次结果和下次时间; jobs log 看运行记录
 larkx recall <msg_id>            # 撤回一条
 larkx service status | logs -f   # 运行状态
 ```
