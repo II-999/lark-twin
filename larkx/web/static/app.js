@@ -106,7 +106,7 @@ async function loadChats() {
 }
 const chatLabel = (id, name) => name || chatNames[id] || (id ? `会话 ${id}` : '');
 
-const KIND = { message: '消息', task: '任务', say: '终端指令', system: '维护', web: '网页' };
+const KIND = { message: '消息', task: '任务', say: '终端指令', system: '维护', report: '汇报', web: '网页' };
 // daemon: 不经过数字人、由 daemon 直接做的(没权限的人想唤起时的自动回复、触发时在那条消息上加的表情回复)
 const ACTOR = { agent: '数字人', daemon: '自动回复' };
 const STATUS = { pending: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消', expired: '已过期' };

@@ -364,6 +364,11 @@ def cmd_forward(args):
 
 def cmd_config(args):
     cfg = load_config()
+    try:
+        from sqlalchemy.engine import make_url
+        cfg['storage_url'] = make_url(cfg['storage_url']).render_as_string(hide_password=True)
+    except Exception:
+        cfg['storage_url'] = '(无法解析)'
     _print_json(cfg)
     return 0
 
@@ -701,17 +706,20 @@ def cmd_task(args):
         every = state.parse_duration(args.every) if args.every else 0
     except ValueError as e:
         return _fail(args, str(e))
-    chat_id, anchor, by_owner = args.chat or '', args.root or '', True
+    chat_id, anchor, by_owner, creator = args.chat or '', args.root or '', True, 'human'
     if agent:
-        if not turn or turn['kind'] == 'system':
+        if not turn:
             return _fail(args, '当前没有正在处理的消息, 数字人不能新建任务')
-        by_owner = turn['is_owner']
+        if turn['kind'] in ('system', 'report') and not turn['chat_id']:
+            return _fail(args, '维护任务里找不到本人私聊, 不能安排提醒')
+        # 维护任务、汇报里安排的提醒都落在本人私聊, 到点按访客规则执行, 只能在本人私聊提醒
+        by_owner, creator = turn['is_owner'], ('system' if turn['kind'] in ('system', 'report') else 'agent')
         chat_id = chat_id or turn['chat_id']
         anchor = anchor or (turn['anchor'] if chat_id == turn['chat_id'] else '')
         if chat_id != turn['chat_id'] and not by_owner:
             return _fail(args, '只能给当前会话安排任务; 其他会话需要本人发起')
     task_id = st.add_task(kind='task', due_at=int(due), every_sec=every, prompt=prompt, chat_id=chat_id, anchor=anchor,
-                          by_owner=1 if by_owner else 0, creator='agent' if agent else 'human')
+                          by_owner=1 if by_owner else 0, creator=creator)
     when = datetime.fromtimestamp(due).strftime('%Y-%m-%d %H:%M:%S')
     if args.json:
         _print_json({'ok': True, 'id': task_id, 'due_at': when, 'every_sec': every, 'chat_id': chat_id})

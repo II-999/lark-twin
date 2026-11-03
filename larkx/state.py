@@ -23,7 +23,8 @@ RELAY_DIR = STATE_DIR / 'relay'
 FORWARD_DIR = STATE_DIR / 'forward'
 # 补收漏推消息只看 7 天内有动静的会话, 登记留得比它久, 中转、转发的消息无论什么时候补收到都认得出来
 RELAY_TTL = 8 * 86400
-KINDS = ('message', 'task', 'say', 'system')
+# report: daemon 让数字人给本人写的汇报(如接管结束的总结), 只能发到本人私聊
+KINDS = ('message', 'task', 'say', 'system', 'report')
 
 
 def write_turn(kind: str, chat_id: str = '', anchor: str = '', is_owner: bool = False, ref: str = ''):
@@ -105,6 +106,8 @@ def send_denied(target_chat: str, turn) -> str:
         return '当前没有正在处理的消息, 数字人不能主动发消息'
     if turn['kind'] == 'system':
         return '维护任务里不能发飞书消息'
+    if turn['kind'] == 'report':
+        return '' if str(target_chat) == turn['chat_id'] else '汇报只能发到本人私聊'
     if turn['kind'] == 'say' or turn['is_owner']:
         return ''
     if str(target_chat) == turn['chat_id']:
