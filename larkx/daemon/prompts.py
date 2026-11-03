@@ -3,7 +3,13 @@
 TAKEOVER_SUMMARY = ('接管「{name}」(chat_id={chat}) 已结束({why})。用 larkx messages {chat} --limit 60 回顾接管期间的对话, '
                     '给本人发一份简短总结: 聊了什么、谈成了什么、还有什么等本人决定或跟进。目标是: {goal}')
 FLUSH_PROMPT = ('上下文快满了, 马上会被压缩, 压缩后早期的细节会丢失。现在把这段时间里值得长期记住、但还没写进 memory/ 的内容整理进去'
-                '(人、偏好、约定、待跟进的事、群的背景), 更新 memory/MEMORY.md 索引。不要发飞书消息, 整理完直接结束。')
+                '(人、偏好、约定、待跟进的事、群的背景), 按记忆文件的格式写好开头的字段。不要发飞书消息, 整理完直接结束。')
+FLUSH_BEFORE_RESET = ('本人要开新会话, 当前对话的细节马上就没了。把值得长期记住、还没写进 memory/ 的内容整理进去, '
+                      '按记忆文件的格式写好开头的字段。不要发飞书消息, 整理完直接结束。')
+MEMORY_FORMAT = ('记忆文件的格式: 一个主题一个文件, 命名 我.md / 人-<名字>.md / 群-<群名>.md / 事-<主题>.md; 开头写字段 '
+                 '---\ntype: 我|人|群|事\nname: 名字\ndesc: 一句话说明\npeople: [相关的人]\nchats: [相关的群]\n'
+                 'status: 进行中|待跟进|已完成(只用于事)\ndue: YYYY-MM-DD(只用于事, 可空)\nupdated: YYYY-MM-DD\n---, '
+                 '正文自由写。memory/MEMORY.md 由代码按字段生成, 不用改。写完运行 larkx memory lint, 有错误就改掉。')
 REVIEW_PROMPT = ('每日回顾(最近 24 小时)。下面是有动静的会话, 按关注度处理, 用 larkx messages <chat_id> --since 24h 看:\n'
                  '- 重点关注: 逐个看, 值得长期记住的整理进 memory/(人、群、事、约定、待跟进);\n'
                  '- 简单关注: 也看, 但只记和本人有关的: @本人、提到本人负责的事或组关键词、需要本人处理的;\n'
@@ -11,21 +17,20 @@ REVIEW_PROMPT = ('每日回顾(最近 24 小时)。下面是有动静的会话, 
                  '- 「免打扰」只是本人在飞书里的提醒设置, 照样按关注度看, 和本人有关的尤其不能漏;\n'
                  '- 只存不看的会话已经跳过, 不要去看。\n'
                  '{chats}\n'
-                 '然后: 记忆里过时或错误的改掉, 已经办完的跟进删掉, 更新 memory/MEMORY.md 索引; '
+                 '然后: 记忆里过时或错误的改掉, 办完的事把 status 改成已完成; '
                  '本人答应过别人、还没安排的跟进, 用 larkx task add --at <时间> 安排提醒(会在本人私聊提醒)。')
-CONSOLIDATE_PROMPT = ('每周整理记忆: 通读 memory/ 下的全部文件。合并主题重复的文件; 删掉已经办完的跟进、过期的安排和不再成立的内容; '
-                      '每条事实注明最后确认的日期; 超过 60 天没再出现、也不再相关的内容移到 memory/archive/ 并从索引里去掉; '
-                      'MEMORY.md 一个主题一行, 保持在 60 行以内。')
+CONSOLIDATE_PROMPT = ('每周整理记忆: 先运行 larkx memory stats 和 larkx memory lint, 再通读 memory/。合并主题重复的文件; '
+                      '删掉过期的安排和不再成立的内容; 已完成超过 7 天的事、超过 60 天没再确认也不再相关的内容移到 '
+                      'memory/archive/; 还没有开头字段的旧文件补上字段; 记忆文件保持在 60 个以内(我.md 不归档)。')
 BOOTSTRAP_PROMPT = ('初始化记忆(第 {i}/{n} 批)。刚从飞书回填了本人最近 {days} 天的聊天, 先了解本人的工作。'
                     '下面是本人重点关注的会话, 逐个用 larkx messages <chat_id> --since {days}d --limit 200 看:\n{chats}\n'
                     '整理进 memory/: 我.md(本人的角色、负责的事、常合作的人和协作方式), 人-<名字>.md(和本人的关系、在做什么、'
                     '习惯和偏好), 群-<群名>.md(这个群做什么、有哪些人、本人在里面的角色), 事-<主题>.md(进行中的工作和待跟进, '
-                    '写清楚谁、做什么、什么时候)。只记稳定有用的事实, 每条写上日期; 已有同主题的文件就合并更新, 不要重复新建; '
-                    '更新 memory/MEMORY.md 索引。{last}')
-BOOTSTRAP_LAST = '这是最后一批: 最后通读一遍 memory/, 把重复的合并, 索引整理好。'
+                    '写清楚谁、做什么、什么时候)。只记稳定有用的事实; 已有同主题的文件就合并更新, 不要重复新建。{last}')
+BOOTSTRAP_LAST = '这是最后一批: 最后通读一遍 memory/, 把重复的合并。'
 BRIEFING_PROMPT = ('写今天的工作简报, 发到本人私聊。下面是代码算好的数据(都是事实, 别编造):\n\n{data}\n\n'
                    '要求: markdown, 一条消息, 25 行以内, 先写结论。顺序: ① 今天要你处理的(找你还没回的、你标记的、'
-                   '到期的提醒, 再结合 memory/ 里 事-*.md 的待跟进); ② 重点关注的会话进展, 每个一两句, 需要时用 '
+                   '到期的提醒和待跟进的事); ② 重点关注的会话进展, 每个一两句, 需要时用 '
                    'larkx messages <chat_id> --since {since} 看; ③ 简单关注和免打扰的群里和本人有关的; ④ 提醒。{weekly}'
                    '没什么可报的也发一句"今天没有需要你处理的事"。发现某个会话分组明显不合适, 可以在末尾建议'
                    '(如: 「xx群」消息多但和你无关, 建议设为只存不看)。')
@@ -59,6 +64,10 @@ ORGANIZE_WEEKLY_HEAD = '每周整理会话: 看看分组、置顶、标记要不
 MAINTENANCE_TAIL = ' 不要发飞书消息。最后用一两句话说明这次记了或改了什么(会存进运行记录)。'
 
 
+def _with_format(text: str) -> str:
+    return text + '\n' + MEMORY_FORMAT
+
+
 def chat_line(r: dict) -> str:
     """会话一行: [关注度] 名字 (chat_id) 组 · 24h 条数 · 本人发言 · @本人 · 标记。"""
     tags = [r['attention_name']] + (['私人'] if r.get('private') else []) + (['免打扰'] if r.get('feishu_muted') else [])
@@ -79,11 +88,11 @@ def review(cfg: dict, storage, now, owner_id: str = '', **kw) -> str:
     chats = '\n'.join(chat_line(r) for r in shown) if shown else '(最近 24 小时没有需要回顾的会话)'
     if skipped:
         chats += f'\n(另有 {skipped} 个只存不看的会话有消息, 已跳过)'
-    return REVIEW_PROMPT.format(chats=chats) + MAINTENANCE_TAIL
+    return _with_format(REVIEW_PROMPT.format(chats=chats)) + MAINTENANCE_TAIL
 
 
 def consolidate(cfg: dict, storage, now, owner_id: str = '', **kw) -> str:
-    return CONSOLIDATE_PROMPT + MAINTENANCE_TAIL
+    return _with_format(CONSOLIDATE_PROMPT) + MAINTENANCE_TAIL
 
 
 def bootstrap(cfg: dict, storage, now, owner_id: str = '', **kw) -> str:
@@ -100,12 +109,12 @@ def bootstrap(cfg: dict, storage, now, owner_id: str = '', **kw) -> str:
         lines.append(f"- {r['name'] or '(未命名)'} ({cid}) 组「{r['group'] or r['suggested_group']}」: "
                      f"{r['msgs']} 条, 本人 {r['owner_msgs']} 条")
     return BOOTSTRAP_PROMPT.format(i=i + 1, n=n, days=int(cfg.get('backfill_days') or 30), chats='\n'.join(lines),
-                                   last=BOOTSTRAP_LAST if i == n - 1 else '') + MAINTENANCE_TAIL
+                                   last=BOOTSTRAP_LAST if i == n - 1 else '') + '\n' + MEMORY_FORMAT + MAINTENANCE_TAIL
 
 
 def briefing(cfg: dict, storage, now, owner_id: str = '', client=None, **kw) -> str:
     from .. import digest
-    data = digest.briefing_data(storage, owner_id, now, client=client)
+    data = digest.briefing_data(storage, owner_id, now, client=client, home=cfg.get('agent_home'))
     return BRIEFING_PROMPT.format(data=digest.render(data), since='7d' if data['weekly'] else '24h',
                                   weekly=BRIEFING_WEEKLY if data['weekly'] else '')
 

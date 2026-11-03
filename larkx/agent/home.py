@@ -11,7 +11,8 @@ TEMPLATES = Path(__file__).parent / 'templates'
 OLD_TEMPLATE_SHA256 = {'6927812ddbec998de7f1785c415889ed74adb266f83768a6a5647216dad11bca',
                        'de2a5b963785a90cbcd3e8e3ae5a0f627804a044352d36d5d8eed506a97337a6',
                        '3e39cab454487972a823ba89b2b290b2019ee01882bf6edab2d46bcc632519a0',
-                       '23f7839130d2f6ada2e12fe75d3b57a5ac4688d313bccde0ee0b05526524f01c'}
+                       '23f7839130d2f6ada2e12fe75d3b57a5ac4688d313bccde0ee0b05526524f01c',
+                       '37d1677e0b79a5b53a2efb1148a645e91c413dffec5dda17ae36352f13780a0d'}
 GITIGNORE = 'downloads/\n'
 MEMORY_INDEX = '# 记忆索引\n\n每行一条: - [标题](文件名.md) — 一句话说明。具体内容写在对应文件里。\n'
 
@@ -66,7 +67,12 @@ def ensure_agent_home(cfg: dict) -> Path:
 
 
 def commit_agent_home(home: Path, message: str) -> bool:
-    """把人设、记忆等变化提交进数字人目录自己的 git 仓库; 没有变化时返回 False。"""
+    """把人设、记忆等变化提交进数字人目录自己的 git 仓库; 没有变化时返回 False。提交前按记忆文件的字段重建索引。"""
+    try:
+        from ..memory import build_index
+        build_index(home)
+    except Exception as e:
+        logger.warning(f'重建记忆索引失败: {e!r}')
     try:
         _git(home, 'add', '-A')
         if _git(home, 'diff', '--cached', '--quiet', check=False).returncode == 0:

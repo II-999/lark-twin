@@ -40,7 +40,7 @@ def _flags(client, storage) -> list:
              'content': (r.content or '')[:120], 'msg_id': r.msg_id} for r in rows]
 
 
-def briefing_data(storage, owner_id: str, now: datetime = None, client=None) -> dict:
+def briefing_data(storage, owner_id: str, now: datetime = None, client=None, home=None) -> dict:
     now = now or datetime.now()
     weekly = now.weekday() == 0
     hours = 24 * 7 if weekly else 24
@@ -81,6 +81,14 @@ def briefing_data(storage, owner_id: str, now: datetime = None, client=None) -> 
         s.close()
     new_chats = [{'name': r['name'], 'group': r['suggested_group'], 'attention': r['attention_name'], 'reason': r['reason']}
                  for r in cs.view(fresh)]
+    todo = []
+    if home:
+        from . import memory
+        for e in memory.select(home, type_='事', status='待跟进', due_within=7, today=now.date()) + \
+                [e for e in memory.select(home, type_='事', status='待跟进') if not e['meta'].get('due')]:
+            m = e['meta']
+            todo.append({'name': m.get('name') or e['file'], 'due': m.get('due', ''), 'people': m.get('people') or [],
+                         'desc': m.get('desc', '')})
     week = {}
     if weekly:
         for r in act:
@@ -89,7 +97,7 @@ def briefing_data(storage, owner_id: str, now: datetime = None, client=None) -> 
             'window': '过去 7 天' if weekly else '过去 24 小时',
             'unreplied': unreplied, 'flags': _flags(client, storage), 'focus': focus, 'light_related': light,
             'tasks': [{'id': t.id, 'due': _fmt(t.due_at), 'prompt': (t.prompt or '')[:100]} for t in tasks],
-            'new_chats': new_chats,
+            'new_chats': new_chats, 'todo': todo,
             'broken_jobs': [{'job': b['job'], 'status': b['status_name'], 'error': b['error'][:100]} for b in broken],
             'week': week}
 
@@ -108,6 +116,10 @@ def render(data: dict) -> str:
     if data['flags']:
         lines.append('\n**你标记的待处理**')
         lines += [f"- {f['time']} 「{f['chat_name']}」{f['sender_name']}: {f['content']}" for f in data['flags']]
+    if data.get('todo'):
+        lines.append('\n**待跟进的事**(记忆里的)')
+        lines += [f"- {t['name']}" + (f"(截止 {t['due']})" if t['due'] else '') + (f": {t['desc']}" if t['desc'] else '')
+                  + (f" — {'、'.join(t['people'])}" if t['people'] else '') for t in data['todo']]
     if data['tasks']:
         lines.append('\n**7 天内的提醒**')
         lines += [f"- {t['due']} {t['prompt']}" for t in data['tasks']]

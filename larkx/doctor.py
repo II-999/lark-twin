@@ -202,6 +202,20 @@ def check_briefing(cfg):
     return _check('每日简报', OK, f'每天 {t[0]:02d}:{t[1]:02d} 发到本人私聊, 周一附上周回顾')
 
 
+def check_memory(cfg):
+    """长期记忆: 文件数、待跟进、字段问题。"""
+    from pathlib import Path
+    from . import memory
+    home = Path(cfg['agent_home'])
+    if not (home / 'memory').is_dir():
+        return _check('长期记忆', OK, '还没有(daemon 第一次启动时创建)')
+    s = memory.stats(home)
+    detail = f"{s['files']} 个文件, 归档 {s['archived']} 个, 待跟进 {s['todo']} 件"
+    if s['errors']:
+        return _check('长期记忆', WARN, f"{detail}; {s['errors']} 个字段错误", 'larkx memory lint 查看; 每日回顾时分身会自己改')
+    return _check('长期记忆', OK, detail + (f"; {s['warnings']} 个提醒(larkx memory lint)" if s['warnings'] else ''))
+
+
 def run(skip_model=False) -> list:
     cfg = load_config()
     checks = [check_login(), *check_config(cfg), check_agent_cli(cfg)]
@@ -213,4 +227,5 @@ def run(skip_model=False) -> list:
     checks.append(check_jobs(cfg))
     checks.append(check_backfill(cfg))
     checks.append(check_briefing(cfg))
+    checks.append(check_memory(cfg))
     return checks

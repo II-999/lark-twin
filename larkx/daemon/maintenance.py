@@ -156,7 +156,8 @@ class Maintenance:
         if sent and result is not None and not result.is_error:
             self.store.finish(run.id, result.text or '已发出')
             return
-        data = digest.briefing_data(self.d.storage, str(self.d.auth.user_id), client=self.d.client)
+        data = digest.briefing_data(self.d.storage, str(self.d.auth.user_id), client=self.d.client,
+                                    home=self.d.cfg.get('agent_home'))
         ok = self.d.notifier.send(digest.render(data) + '\n\n(分身这次没写成简报, 以上是数据版)')
         why = '数字人没有发出简报' if result is not None and not result.is_error else \
             ('agent 会话中断' if result is None else f'{result.subtype}: {result.text or ""}')

@@ -19,7 +19,7 @@ from ..storage import Storage
 from ..event_rules import RuleStore
 from .listener import Listener
 from .maintenance import Maintenance
-from .prompts import FLUSH_PROMPT, TAKEOVER_SUMMARY
+from .prompts import FLUSH_BEFORE_RESET, FLUSH_PROMPT, TAKEOVER_SUMMARY
 from .triggers import (build_prompt, build_report_prompt, build_say_prompt, build_system_prompt, build_task_prompt,
                        denied_attempt, parse_command, parse_takeover, should_handle, strip_mentions, strip_prefix,
                        takeover_note)
@@ -58,6 +58,7 @@ class Event:
     inbox_id: int = 0
     note: str = ''
     run_id: int = 0  # 例行任务的运行记录
+    after: str = ''  # 这一轮结束后要做的事: reset = 开新会话
 
 
 class Daemon:
@@ -80,6 +81,7 @@ class Daemon:
         self._ws_down_at = None  # 长连接这次断开的时间(重连失败不改), 重新连上后清掉
         self._ws_gaps = []       # 最近的断线窗口 [(断开时间, 重新连上的时间)]
         self._catchup_wake = asyncio.Event()  # 长连接重新连上时叫醒补收循环, 马上补收一轮
+        self._turns_since_flush = 1  # 上次整理记忆后处理过几轮; 恢复的旧会话里可能有没记下的, 从 1 起
 
     def _banner(self):
         t = self.cfg.get('triggers') or {}
@@ -162,10 +164,9 @@ class Daemon:
                 await self._reply(chat_id, ', '.join(parts), root_id)
                 return
         elif cmd == 'clear':
-            self._drain_inbox()
-            await self.session.reset()
+            text = await self._clear(chat_id, root_id)
             if not rest:
-                await self._reply(chat_id, '✅ 已开启新会话(长期记忆保留)', root_id)
+                await self._reply(chat_id, text, root_id)
                 return
         elif cmd == 'takeover':
             if chat_id == self.notifier.owner_chat():
@@ -308,12 +309,31 @@ class Daemon:
             stopped = await self.session.interrupt()
             return ('已停止当前任务' if stopped else '当前没有在处理的任务') + (f', 清空 {n} 条排队消息' if n else '')
         if action == 'clear':
-            self._drain_inbox()
-            await self.session.reset()
-            return '已开启新会话(长期记忆保留)'
+            return await self._clear()
         if action.startswith('job:'):
             return await self.maintenance.request(action[4:])
         return f'未知的控制动作 {action}'
+
+    async def _clear(self, chat_id: str = '', root_id: str = '') -> str:
+        """开新会话: 上次整理记忆后还聊过, 就先排一轮整理记忆, 结束后再重置(余下的消息排在它后面);
+        没聊过直接重置。"""
+        self._drain_inbox()
+        await self.session.interrupt()
+        if getattr(self, '_turns_since_flush', 1):
+            await self.inbox.put(Event('system', build_system_prompt(FLUSH_BEFORE_RESET), chat_id=chat_id, anchor=root_id,
+                                       ref='memory-flush:clear', after='reset'))
+            return '🧹 先把这段对话里值得记的写进记忆, 再开新会话'
+        await self.session.reset()
+        return '✅ 已开启新会话(长期记忆保留)'
+
+    async def _after_reset(self, ev: Event):
+        await self.session.reset()
+        self._turns_since_flush = 0
+        text = '✅ 已开启新会话(长期记忆保留)'
+        if ev.chat_id:
+            await self._reply(ev.chat_id, text, ev.anchor)
+        else:
+            self.notifier.send(text)
 
     # ---- 漏收检查与断线告警 ----
 
@@ -614,6 +634,7 @@ class Daemon:
             await self._run_turn(ev, ev.prompt)
             await asyncio.to_thread(commit_agent_home, self.home, 'system memory-flush')
             await self._run_turn(Event('system', '/compact', ref='compact'), '/compact')
+            self._turns_since_flush = 0
         except SessionCrashed as e:
             logger.error(f'整理记忆时 agent 会话中断: {e}')
 
@@ -622,6 +643,11 @@ class Daemon:
             ev = await self.inbox.get()
             try:
                 await self._handle(ev)
+                if ev.after == 'reset':
+                    await self._after_reset(ev)
+                    continue
+                if ev.kind not in ('system', 'report'):
+                    self._turns_since_flush = getattr(self, '_turns_since_flush', 1) + 1
                 await self._maybe_flush_memory()
             except Exception as e:
                 logger.exception(f'处理 {ev.kind} {ev.ref} 异常: {e!r}')

@@ -985,6 +985,48 @@ def organize_status(k):
     return {'pending': '待定', 'applied': '已执行', 'failed': '失败', 'rejected': '已放弃', 'undone': '已撤销'}.get(k, k)
 
 
+def cmd_memory(args):
+    """长期记忆: list 按字段筛选, lint 检查, stats 统计, index 重建索引。数字人也能用。"""
+    from pathlib import Path
+    from . import memory
+    home = Path(load_config()['agent_home'])
+    if args.action == 'index':
+        changed = memory.build_index(home)
+        return (print('索引已更新' if changed else '索引已是最新') or 0)
+    if args.action == 'stats':
+        s = memory.stats(home)
+        if args.json:
+            _print_json(s)
+        else:
+            print(f"{s['files']} 个记忆文件(" + '、'.join(f'{k} {v}' for k, v in s['by_type'].items()) +
+                  f"), 归档 {s['archived']} 个, 待跟进 {s['todo']} 件, {s['bytes'] // 1000}KB; "
+                  f"问题: {s['errors']} 个错误、{s['warnings']} 个提醒")
+        return 0
+    if args.action == 'lint':
+        issues = memory.lint(home)
+        if args.json:
+            _print_json([{'level': l, 'file': f, 'message': m} for l, f, m in issues])
+        else:
+            for l, f, m in issues:
+                print(f"{'❌' if l == 'error' else '⚠️ ' if l == 'warn' else 'ℹ️ '} {f}: {m}")
+            print('没有问题' if not issues else f'共 {len(issues)} 个问题')
+        return 1 if any(l == 'error' for l, _, _ in issues) else 0
+    try:
+        due = state.parse_duration(args.due) // 86400 if args.due else None
+    except ValueError as e:
+        return _fail(args, str(e))
+    rows = memory.select(home, args.type, args.status, due, args.about)
+    if args.json:
+        _print_json([{'file': e['file'], **e['meta']} for e in rows])
+        return 0
+    for e in rows:
+        m = e['meta']
+        extra = ' '.join(x for x in (m.get('status', ''), f"截止 {m['due']}" if m.get('due') else '',
+                                     f"更新 {m['updated']}" if m.get('updated') else '') if x)
+        print(f"[{m.get('type', '?')}] {m.get('name') or e['file']} ({e['file']}) {extra}")
+    return 0
+
+
 def cmd_prune(args):
     """清理旧数据: 不带 --days 时按关注度和保留期清理消息、整理旧记录; 带 --days 时只清 --chat 指定的会话。数字人不能用。"""
     from . import groups, jobs, retention
@@ -1401,6 +1443,14 @@ def main():
     p.add_argument('--limit', type=int, default=20)
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_organize)
+    p = sub.add_parser('memory', help='长期记忆: 按字段筛选、检查、统计、重建索引')
+    p.add_argument('action', nargs='?', choices=['list', 'lint', 'stats', 'index'], default='list')
+    p.add_argument('--type', choices=['我', '人', '群', '事'])
+    p.add_argument('--status', choices=['进行中', '待跟进', '已完成'])
+    p.add_argument('--due', help='截止日期在多久以内(含已过期), 如 7d')
+    p.add_argument('--about', help='和某个人或群有关(名字)')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_memory)
     p = sub.add_parser('prune', help='清理旧数据: 默认按关注度和保留期, 也可以 --days N --chat 会话 单独清; 数字人不能用')
     p.add_argument('--days', type=int, help='只保留最近多少天(要配合 --chat)')
     p.add_argument('--chat', action='append', default=[], help='会话名或 chat_id, 可重复')

@@ -81,9 +81,11 @@ larkx recall <msg_id> --json     # 发错了就撤回。msg_id 是 larkx send �
 
 ```bash
 larkx messages <chat_id> --limit 30 --json            # 本地库里的消息，按时间从早到晚排列
+larkx messages <chat_id> --since 24h --json           # 只看最近一段时间的
 larkx messages <chat_id> --anchor <anchor> --json     # 只看某个话题
 larkx history <chat_id> --count 20 --json             # 从服务器拉最近的历史（本地库缺消息时用）
-larkx chats --json                                    # 最近活跃的会话
+larkx chats --json                                    # 最近活跃的会话，带分组和关注度
+larkx chats --attention 重点关注 --active 7d          # 按关注度、活跃时间、组(--group)、免打扰(--feishu-muted)筛
 ```
 
 消息字段：`sender_id`、`sender_name`、`content`、`create_time`（Unix 秒）、`direction`（`in` 表示收到，`out` 表示本人发出），以及 `anchor`（话题 id）。
@@ -120,6 +122,48 @@ larkx task cancel <id>
 - 时间格式：`--in` 支持 `30m`、`2h`、`1d`、`1h30m`；`--at` 支持 `2026-10-22 09:00`、`10-22 09:00`、`09:00`（如果这个时间今天已经过了，就是明天）。
 - 任务默认关联当前会话，到点后在这个会话里通知。只有本人发起时，才能给其他会话安排任务。
 
+## 长期记忆
+
+记忆文件的字段和命名见 CLAUDE.md。`memory/MEMORY.md` 由程序生成，不要手改。
+
+```bash
+larkx memory list --type 事 --status 待跟进 --json   # 按字段查；--due 7d 截止在 7 天内的；--about 陈威 和某人或某群有关的
+larkx memory lint                                    # 检查字段和过期，有错误(退出码 1)就改掉
+larkx memory stats                                   # 文件数、待跟进件数、问题数
+```
+
+## 会话分组（本人发起时才能改）
+
+```bash
+larkx groups --json                                          # 全部的组、关注度、会话数
+larkx groups add <组名> --attention 重点关注 --keywords 防劣化,回归
+larkx groups assign <会话名或chat_id>... --to <组名>           # 归组；--attention 只存不看 单独设；--attention 跟组 恢复
+larkx groups edit <组名> --attention 简单关注 [--name 新名] [--private]
+```
+
+关注度：重点关注（每条都看、进记忆）、简单关注（只管和本人有关的）、只存不看（不进回顾）。飞书免打扰不影响关注度。
+
+## 整理方案
+
+daemon 会把整理方案编号私信给本人。本人回复后：
+
+```bash
+larkx organize show [编号] --json              # 看方案和每条的状态；不写编号是最新的
+larkx organize apply <编号> --items 1-5,8      # 本人同意的条目；不写 --items 是全部
+larkx organize reject <编号> --items 3         # 本人不要的条目
+larkx organize undo <编号>                     # 撤销已执行的
+larkx organize propose                         # 本人要你现在整理一下
+```
+
+执行和撤销只有本人发起时能用。整理会话的维护任务里，把方案写成 JSON 用 `larkx organize submit <文件>` 提交，格式见任务说明。
+
+## 例行任务（只能看）
+
+```bash
+larkx jobs                      # 每日回顾、简报、清理等的上次结果和下次时间
+larkx jobs log --job review     # 运行记录
+```
+
 ## 唤起白名单（只能看，不能改）
 
 ```bash
@@ -130,4 +174,4 @@ larkx whitelist list --json    # 除本人外还有谁能唤起你；rule 是当
 
 ## 不能用的命令
 
-`larkx api`、`auth`、`listen`、`daemon`、`service`、`doctor`、`say`、`skill`、`web` 以及 `whitelist add` / `remove` 都会被拒绝。需要的能力如果上面没有，就告诉本人。
+`larkx api`、`auth`、`listen`、`daemon`、`service`、`doctor`、`say`、`skill`、`web`、`prune`、`backfill`、`jobs run` 以及 `whitelist add` / `remove` 都会被拒绝。需要的能力如果上面没有，就告诉本人。
