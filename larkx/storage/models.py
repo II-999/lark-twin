@@ -127,6 +127,32 @@ class Control(Base):
 
 
 
+class JobRun(Base):
+    """例行任务(每日回顾、简报、清理……)的每次运行: 先记下再执行, 状态和结果都看得见。"""
+    __tablename__ = 'job_runs'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job = Column(String(32), default='', index=True)
+    slot = Column(String(32), default='')          # 这次属于哪个时段: '2026-11-03' | 'once' | 'manual-<时间戳>'
+    attempt = Column(Integer, default=1)
+    trigger = Column(String(16), default='schedule')  # schedule | manual | startup
+    status = Column(String(16), default='queued', index=True)  # queued running ok failed skipped interrupted
+    ref = Column(String(64), default='')           # 轮次 ref job:<name>#<id>, 和 actions.turn_ref 对得上
+    created_at = Column(DateTime, default=datetime.now)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    summary = Column(Text, default='')
+    error = Column(Text, default='')
+    __table_args__ = (Index('ix_job_slot', 'job', 'slot'),)
+
+
+class JobState(Base):
+    """例行任务的断点和完成标记(回填进度、初始化记忆的批次)。"""
+    __tablename__ = 'job_state'
+    job = Column(String(32), primary_key=True)
+    data = Column(Text, default='{}')
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class WhitelistEntry(Base):
     """唤起白名单: 除本人外能叫起数字人的人。只按 user_id 匹配; 名字、部门、头像是添加时的快照, 只用来显示。"""
     __tablename__ = 'whitelist'

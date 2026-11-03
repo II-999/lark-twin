@@ -18,6 +18,8 @@ from ..protocol import AuthExpired, LarkAuth, LarkClient
 from ..storage import Storage
 from ..event_rules import RuleStore
 from .listener import Listener
+from .maintenance import Maintenance
+from .prompts import FLUSH_PROMPT, TAKEOVER_SUMMARY
 from .triggers import (build_prompt, build_report_prompt, build_say_prompt, build_system_prompt, build_task_prompt,
                        denied_attempt, parse_command, parse_takeover, should_handle, strip_mentions, strip_prefix,
                        takeover_note)
@@ -37,14 +39,7 @@ RECONNECT_CATCHUP_DELAY = 5  # 长连接重新连上后等几秒再补收, 让�
 WS_GAP_MARGIN = 60         # 断线窗口前后各放宽多少秒: 断开前刚发、重连后马上发的消息也可能没推到
 WS_GAP_KEEP = 86400        # 断线窗口记多久: 这期间补收到的、发送时间落在窗口里的消息都不算长连接漏推
 SYSTEM_MSG_TYPE = 6        # Message.Type.SYSTEM: 入群、改群名、"大群已关闭通知"(type=1500)这类系统提示
-TAKEOVER_SUMMARY = ('接管「{name}」(chat_id={chat}) 已结束({why})。用 larkx messages {chat} --limit 60 回顾接管期间的对话, '
-                    '给本人发一份简短总结: 聊了什么、谈成了什么、还有什么等本人决定或跟进。目标是: {goal}')
 RECONNECT_ALERT = (3, 600)  # 10 分钟内断线 3 次就告警
-FLUSH_PROMPT = ('上下文快满了, 马上会被压缩, 压缩后早期的细节会丢失。现在把这段时间里值得长期记住、但还没写进 memory/ 的内容整理进去'
-                '(人、偏好、约定、待跟进的事、群的背景), 更新 memory/MEMORY.md 索引。不要发飞书消息, 整理完直接结束。')
-REVIEW_PROMPT = ('每日回顾: 用 larkx chats 和 larkx messages 看一下最近 24 小时本人参与的会话(重点是本人发的消息和找本人的消息), '
-                 '把值得长期记住的新信息整理进 memory/ 并更新索引; 发现记忆里过时或错误的内容就改掉。'
-                 '答应过但还没安排的跟进, 用 larkx task add 补上。不要发飞书消息, 整理完直接结束。')
 
 
 @dataclass
@@ -62,6 +57,7 @@ class Event:
     sender_name: str = ''
     inbox_id: int = 0
     note: str = ''
+    run_id: int = 0  # 例行任务的运行记录
 
 
 class Daemon:
@@ -73,6 +69,7 @@ class Daemon:
         self.rule_store = RuleStore(self.storage)
         self.session = create_session(self.cfg, self.storage)
         self.notifier = Notifier(self.cfg, self.client)
+        self.maintenance = Maintenance(self)
         self.prefix = (self.cfg.get('triggers') or {}).get('prefix') or ''
         self.inbox = asyncio.Queue()
         self.home = None
@@ -102,6 +99,7 @@ class Daemon:
         self.home = ensure_agent_home(self.cfg)
         self._banner()
         self.rule_store.recover()
+        self.maintenance.recover(self._legacy_state())
         n = self.storage.reset_running_tasks()
         if n:
             logger.info(f'{n} 个上次没跑完的任务已重新排队')
@@ -313,6 +311,8 @@ class Daemon:
             self._drain_inbox()
             await self.session.reset()
             return '已开启新会话(长期记忆保留)'
+        if action.startswith('job:'):
+            return await self.maintenance.request(action[4:])
         return f'未知的控制动作 {action}'
 
     # ---- 漏收检查与断线告警 ----
@@ -497,15 +497,13 @@ class Daemon:
 
     # ---- 定时任务与每日回顾 ----
 
-    def _load_state(self) -> dict:
+    @staticmethod
+    def _legacy_state() -> dict:
+        """升级前记在 daemon.json 里的每日回顾日期(现在改成例行任务的运行记录)。"""
         try:
             return json.loads(DAEMON_STATE.read_text(encoding='utf-8'))
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
-
-    def _save_state(self, data: dict):
-        DAEMON_STATE.parent.mkdir(parents=True, exist_ok=True)
-        DAEMON_STATE.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
 
     async def _schedule(self):
         while True:
@@ -528,14 +526,7 @@ class Daemon:
                                    is_owner=bool(task.by_owner), ref=f'task#{task.id}', task_id=task.id)
                     await self.inbox.put(ev)
                 await self._finish_takeovers()
-                hour = self.cfg.get('memory_review_hour', -1)
-                st = self._load_state()
-                today = datetime.now().strftime('%Y-%m-%d')
-                if 0 <= hour <= 23 and datetime.now().hour >= hour and st.get('last_review') != today:
-                    st['last_review'] = today
-                    self._save_state(st)
-                    await self.inbox.put(Event('system', build_system_prompt(REVIEW_PROMPT), chat_id=self.notifier.owner_chat(),
-                                               ref='daily-review'))
+                await self.maintenance.tick()
             except Exception as e:
                 logger.exception(f'调度异常: {e!r}')
             await asyncio.sleep(SCHEDULER_INTERVAL)
@@ -573,6 +564,8 @@ class Daemon:
             if ev.kind == 'message':
                 prompt = build_prompt(ev.msg, ev.body, ev.chat_name, ev.sender_name, is_owner=ev.is_owner, note=note)
             try:
+                if ev.run_id:
+                    self.maintenance.started(ev.run_id)
                 result = await self._run_turn(ev, prompt)
                 break
             except SessionCrashed as e:
@@ -587,6 +580,8 @@ class Daemon:
             self._finish_task(ev, result)
         if ev.inbox_id:
             self.storage.inbox_set(ev.inbox_id, 'done' if result else 'failed')
+        if ev.run_id:
+            self.maintenance.on_turn_done(ev, result)
         self._report(ev, result)
         if result:
             logger.info(f'[agent] {ev.kind} {ev.ref} 结束: {result.subtype} {result.duration_s:.1f}s 工具调用 {len(result.tools)} 次'
@@ -601,6 +596,8 @@ class Daemon:
             self.notifier.alert(note, key=f'session:{note[:30]}', cooldown=1800)
         if hasattr(self.session, 'events'):
             self.session.events.clear()
+        if ev.run_id:
+            return  # 例行任务的失败由 maintenance 告警
         if result is None:
             self.notifier.alert(f'处理 {ev.kind} {ev.ref} 时 agent 中断或异常, 这一条结果未知', key='crash', cooldown=900)
         elif result.is_error and result.subtype != 'interrupted' and ev.kind != 'system':

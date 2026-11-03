@@ -4,7 +4,7 @@ import sys
 from datetime import datetime, timedelta
 from loguru import logger
 from . import state
-from .config import is_agent_actor, load_config, with_signature
+from .config import inside_twin, is_agent_actor, load_config, with_signature
 from .protocol import REGIONS, AuthExpired, LarkAuth, LarkClient, get_region
 from .storage import Storage
 
@@ -639,6 +639,59 @@ def cmd_say(args):
     return _fail(args, f'等待超时, 任务 #{task_id} 仍在排队或处理中; daemon 是否在运行? larkx service status')
 
 
+def cmd_jobs(args):
+    """例行任务: list 看每个任务的上次结果和下次时间; log 看运行记录; run 让 daemon 马上跑一次(数字人不能用)。"""
+    import time
+    from . import jobs
+    from .daemon.prompts import BUILDERS
+    st, cfg, now = Storage(), load_config(), datetime.now()
+    store = jobs.JobStore(st)
+    if args.action == 'log':
+        rows = [jobs.describe(r) for r in store.log(args.job, args.limit)]
+        if args.json:
+            _print_json(rows)
+            return 0
+        for r in rows:
+            detail = (r['error'] or r['summary']).replace('\n', ' ')
+            print(f"#{r['id']} {r['job']} [{r['status_name']}] {r['created_at']} {r['trigger']}"
+                  + (f" 第{r['attempt']}次" if r['attempt'] > 1 else '') + (f": {detail[:120]}" if detail else ''))
+        return 0
+    if args.action == 'run':
+        if inside_twin():
+            return _fail(args, '数字人不能手动触发例行任务', code=3)
+        job = jobs.get(args.name or '')
+        if not job:
+            return _fail(args, f'用法: larkx jobs run <名字>, 可用: {", ".join(j.name for j in jobs.JOBS)}')
+        if args.preview:
+            if job.kind != 'agent':
+                return _fail(args, f'{job.name} 不是交给数字人的任务, 没有提示词')
+            print(BUILDERS[job.name](cfg, st, now))
+            return 0
+        cid = st.control_add(f'job:{job.name}')
+        for _ in range(30):
+            c = st.control_get(cid)
+            if c and c.status != 'pending':
+                return (_print_json({'ok': True, 'result': c.result}) or 0) if args.json else (print(c.result) or 0)
+            time.sleep(0.5)
+        return _fail(args, '已提交, 但 daemon 15 秒内没有接手(没在运行?), 用 larkx service status 查看')
+    rows = []
+    for job in jobs.JOBS:
+        last = jobs.describe(store.last(job.name))
+        nxt = jobs.next_time(job, cfg, now)
+        rows.append({'name': job.name, 'title': job.title, 'kind': job.kind, 'enabled': job.when(cfg) is not None,
+                     'next': nxt.strftime('%Y-%m-%d %H:%M') if nxt else '', 'last': last})
+    if args.json:
+        _print_json(rows)
+        return 0
+    for r in rows:
+        last = r['last']
+        state_text = (f"上次 {last['created_at']} {last['status_name']}" if last else '还没跑过')
+        detail = ((last.get('error') or last.get('summary') or '').replace('\n', ' ')[:80]) if last else ''
+        print(f"{r['name']:<12} {r['title']}  {'开' if r['enabled'] else '关'}  {state_text}"
+              + (f"  下次 {r['next']}" if r['next'] else '') + (f"\n    {detail}" if detail else ''))
+    return 0
+
+
 def cmd_audit(args):
     rows = Storage().list_actions(limit=args.limit)
     if args.json:
@@ -987,6 +1040,14 @@ def main():
     p.add_argument('--timeout', type=int, default=600)
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_say)
+    p = sub.add_parser('jobs', help='例行任务(每日回顾、每周整理等): 看状态、看运行记录、手动运行')
+    p.add_argument('action', nargs='?', choices=['list', 'log', 'run'], default='list')
+    p.add_argument('name', nargs='?', help='run: 任务名')
+    p.add_argument('--job', help='log: 只看这个任务')
+    p.add_argument('--limit', type=int, default=20)
+    p.add_argument('--preview', action='store_true', help='run: 只打印交给数字人的提示词, 不运行')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_jobs)
     p = sub.add_parser('audit', help='查看通过 larkx 对外做过的动作(发消息等)')
     p.add_argument('--limit', type=int, default=50)
     p.add_argument('--json', action='store_true')
