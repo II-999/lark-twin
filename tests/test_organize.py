@@ -184,3 +184,20 @@ def test_organize_prompt_has_context(st, fake_client):
     text = prompts.BUILDERS['organize_init']({}, st, datetime.now(), OWNER, client=fake_client)
     assert '初始整理会话' in text and '项目群 | 11 |' in text and '飞书置顶(按顺序): 项目群' in text
     assert 'larkx organize submit downloads/organize.json' in text
+
+
+def test_label_keeps_local_members_when_remote_read_empty(st):
+    """读标签成员的接口读回空时, 重建标签不能丢掉组里原有的会话。"""
+    fs, store = FakeFeishu(), organize.OrganizeStore(st)
+    ops = organize.FeishuOps(fs)
+    cs = groups.ChatStore(st)
+    g = cs.create_group('InfraBuddy', 'focus')
+    cs.assign(['13'], group_id=g.id)
+    fs.labels['500'] = ('InfraBuddy', ['13'])
+    cs.update_group(g.id, feishu_label_id='500')
+    ops.label_items = lambda lid: []                                    # 接口读不到
+    p = store.submit({'groups': [{'name': 'InfraBuddy', 'attention': '重点关注', 'chats': ['项目群']}]})
+    store.apply(p.id, [1, 2], ops)
+    assert sorted(next(iter(fs.labels.values()))[1]) == ['11', '13']
+    store.undo(p.id, ops)
+    assert [sorted(m) for _, m in fs.labels.values()] == [['13']]

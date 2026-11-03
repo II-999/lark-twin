@@ -71,10 +71,18 @@ class FeishuOps:
         return {str(g['id']): g.get('name', '') for g in resp.get('feedGroups') or []}
 
     def label_items(self, label_id) -> list:
-        data = (self.c.api('feed.PullFeedGroupItemsRequest',
-                           {'args': {int(label_id): {'cursor': '', 'count': 200}}, 'version': 1}) or {}).get('data') or {}
-        return [str(i['feedCardId']) for i in (data.get(str(label_id)) or {}).get('feedGroupItems') or []
-                if not i.get('exclude')]
+        """标签里的会话, 尽力而为: 一页最多 50 个(再大接口报 400)。实测这个接口像增量同步, 同一设备常常读回空列表,
+        所以只拿来补充; 标签成员以本地分组为准。"""
+        out, cursor = [], ''
+        for _ in range(40):
+            data = (self.c.api('feed.PullFeedGroupItemsRequest',
+                               {'args': {int(label_id): {'cursor': cursor, 'count': 50}}, 'version': 1}) or {}).get('data') or {}
+            page = data.get(str(label_id)) or {}
+            out += [str(i['feedCardId']) for i in page.get('feedGroupItems') or [] if not i.get('exclude')]
+            if not page.get('hasMore') or not page.get('nextCursor') or page.get('nextCursor') == cursor:
+                break
+            cursor = page['nextCursor']
+        return list(dict.fromkeys(out))
 
     def create_label(self, name, chat_ids) -> str:
         r = self.c.api('feed.CreateFeedGroupRequest', {'feedGroup': {'type': 1, 'name': name},
@@ -326,14 +334,20 @@ class OrganizeStore:
         finally:
             s.close()
 
-    # 飞书标签: 已有同名标签时按成员并集重建(飞书不支持往已有标签里加会话)
+    # 飞书标签跟着分组走: 成员 = 本地这个组的全部会话 + 方案里的 + 读得到的原有成员。飞书不支持往已有标签里加会话,
+    # 有同名标签时删掉按并集重建; 读标签成员的接口不可靠, 所以不能只靠它, 本地分组才是准的
     def _apply_label(self, p, ops):
         g = self.chats.group(p['group'])
         labels = ops.labels()
         old_id = (g.feishu_label_id if g and g.feishu_label_id in labels else '') or \
             next((i for i, n in labels.items() if n == p['group']), '')
-        old_members = ops.label_items(old_id) if old_id else []
-        members = list(dict.fromkeys([*old_members, *p['chat_ids']]))
+        local = [r['chat_id'] for r in self.chats.view() if g and r['group_id'] == g.id]
+        try:
+            remote = ops.label_items(old_id) if old_id else []
+        except Exception:
+            remote = []
+        old_members = list(dict.fromkeys([*remote, *[c for c in local if c not in p['chat_ids']]]))
+        members = list(dict.fromkeys([*old_members, *local, *p['chat_ids']]))
         if old_id:
             ops.delete_label(old_id)
         new_id = ops.create_label(p['group'], members)
