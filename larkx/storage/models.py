@@ -127,6 +127,45 @@ class Control(Base):
 
 
 
+class ChatGroup(Base):
+    """会话分组: 关注度设在组上(重点关注/简单关注/只存不看), 私人组的内容不进工作记忆。"""
+    __tablename__ = 'chat_groups'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(64), unique=True, nullable=False)
+    attention = Column(String(8), default='light')
+    private = Column(Integer, default=0)
+    keywords = Column(Text, default='[]')          # 简单关注时这些词出现也算和本人有关
+    position = Column(Integer, default=0)
+    feishu_label_id = Column(String(32), default='')  # 对应的飞书标签
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ChatProfile(Base):
+    """会话画像: 信号、自动建议的分组和关注度、本人确认的分组。本人确认或手动设置过的, 画像不再改它的分组。"""
+    __tablename__ = 'chat_profiles'
+    chat_id = Column(String(32), primary_key=True)
+    name = Column(String(256), default='')
+    chat_type = Column(Integer, default=0)
+    group_id = Column(Integer, default=0, index=True)   # 0 = 未分组
+    attention = Column(String(8), default='')         # 覆盖组的关注度; 空 = 跟组
+    confirmed = Column(Integer, default=0)
+    suggested_group = Column(String(64), default='')
+    suggested_attention = Column(String(8), default='')
+    reason = Column(String(128), default='')
+    members = Column(Integer, default=0)
+    peer_id = Column(String(32), default='')
+    peer_bot = Column(Integer, default=-1)            # -1 未知 0 真人 1 机器人; 查到一次就记住
+    feishu_muted = Column(Integer, default=-1)        # 飞书免打扰: 只记录, 不参与降级
+    feishu_pinned = Column(Integer, default=0)
+    msgs = Column(Integer, default=0)                 # 统计窗口(30 天)内的消息数
+    owner_msgs = Column(Integer, default=0)
+    at_me = Column(Integer, default=0)
+    last_at = Column(BigInteger, default=0)
+    profiled_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class JobRun(Base):
     """例行任务(每日回顾、简报、清理……)的每次运行: 先记下再执行, 状态和结果都看得见。"""
     __tablename__ = 'job_runs'

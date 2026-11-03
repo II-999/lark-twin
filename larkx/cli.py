@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import time
 from datetime import datetime, timedelta
 from loguru import logger
 from . import state
@@ -261,16 +262,154 @@ def cmd_config(args):
     return 0
 
 
+def _chat_tags(r: dict) -> str:
+    tags = [r['attention_name'] + ('' if r['attention_source'] in ('跟组', '单独设置') else '·建议')]
+    tags += (['私人'] if r['private'] else []) + (['免打扰'] if r['feishu_muted'] else []) + \
+        (['置顶'] if r['feishu_pinned'] else [])
+    return ' '.join(f'[{t}]' for t in tags)
+
+
 def cmd_chats(args):
+    from . import groups
     st = Storage()
-    rows = st.list_chats(limit=args.limit)
+    order = [c.chat_id for c in st.list_chats(limit=100000)]
+    rows = {r['chat_id']: r for r in groups.ChatStore(st).view()}
+    rows = [rows[c] for c in order if c in rows]
+    try:
+        if args.attention:
+            want = {groups.parse_attention(a) for a in args.attention.split(',') if a.strip()}
+            rows = [r for r in rows if r['attention'] in want]
+        if args.active:
+            since = time.time() - state.parse_duration(args.active)
+            rows = [r for r in rows if (r['last_at'] or 0) >= since]
+    except ValueError as e:
+        return _fail(args, str(e))
+    if args.group:
+        rows = [r for r in rows if (r['group'] or r['suggested_group']) == args.group]
+    if args.feishu_muted:
+        rows = [r for r in rows if r['feishu_muted']]
+    rows = rows[:args.limit]
     if args.json:
-        _print_json([{'chat_id': c.chat_id, 'name': c.name, 'chat_type': c.chat_type, 'updated_at': c.updated_at} for c in rows])
+        _print_json(rows)
         return 0
-    for c in rows:
-        type_name = {1: '私聊', 2: '群聊', 3: '话题群'}.get(c.chat_type, '?')
-        print(f"{c.chat_id}\t{type_name}\t{c.name or '(未命名)'}\t更新于 {c.updated_at}")
+    for r in rows:
+        type_name = {1: '私聊', 2: '群聊', 3: '话题群'}.get(r['chat_type'], '?')
+        group = r['group'] or (f"{r['suggested_group']}?" if r['suggested_group'] else '未分组')
+        print(f"{r['chat_id']}\t{type_name}\t{r['name'] or '(未命名)'}\t{group}\t{_chat_tags(r)}\t更新于 {r['updated_at']}")
     return 0
+
+
+def _owner_turn_denied() -> str:
+    """数字人只有在本人发起的轮次里才能改分组(和监听任务一样)。"""
+    if not is_agent_actor():
+        return ''
+    turn = state.read_turn()
+    if turn and turn.get('is_owner') and turn.get('kind') in ('message', 'say'):
+        return ''
+    return '只有本人发起时才能调整会话分组'
+
+
+def _resolve_chats(args, cs, targets) -> list:
+    """会话名或 chat_id -> chat_id 列表; 有一个找不到或对不上唯一会话就整体失败(返回 None)。"""
+    out = []
+    for t in targets:
+        found = cs.find_chats(t)
+        if len(found) == 1:
+            out.append(found[0][0])
+            continue
+        if not found:
+            _fail(args, f'本地没有叫「{t}」的会话(可以用 larkx chats 查, 或等它有新消息、先回填历史)')
+            return None
+        if _interactive() and not args.json:
+            i = _choose(f'「{t}」对上 {len(found)} 个会话, 选一个:', [f'{n} ({c})' for c, n in found])
+            if i is None:
+                return None
+            out.append(found[i][0])
+            continue
+        _fail(args, f'「{t}」对上 {len(found)} 个会话, 用 chat_id 重新运行: ' + '; '.join(f'{n} ({c})' for c, n in found[:10]))
+        return None
+    return out
+
+
+def cmd_groups(args):
+    """会话分组: 看组和成员数、建组、改组(关注度、关键词、私人)、删组、把会话归进组、刷新画像。"""
+    from . import groups
+    st = Storage()
+    cs = groups.ChatStore(st)
+    if args.action == 'list':
+        views = cs.view()
+        counts = {}
+        for r in views:
+            counts[r['group_id']] = counts.get(r['group_id'], 0) + 1
+        rows = [{'id': g.id, 'name': g.name, 'attention': g.attention, 'attention_name': groups.ATTENTION[g.attention],
+                 'private': bool(g.private), 'keywords': json.loads(g.keywords or '[]'), 'chats': counts.get(g.id, 0),
+                 'feishu_label_id': g.feishu_label_id} for g in cs.groups()]
+        unassigned = counts.get(0, 0)
+        if args.json:
+            _print_json({'groups': rows, 'unassigned': unassigned})
+            return 0
+        for g in rows:
+            extra = (' 私人' if g['private'] else '') + (f" 关键词: {', '.join(g['keywords'])}" if g['keywords'] else '')
+            print(f"{g['name']}\t{g['attention_name']}\t{g['chats']} 个会话{extra}")
+        print(f'未分组: {unassigned} 个会话(按画像建议生效, larkx chats 查看)')
+        return 0
+    denied = _owner_turn_denied()
+    if denied:
+        return _fail(args, denied, code=3)
+    try:
+        attention = None
+        if args.attention:
+            attention = '' if args.attention in groups.FOLLOW_GROUP else groups.parse_attention(args.attention)
+        keywords = [k.strip() for k in args.keywords.split(',') if k.strip()] if args.keywords is not None else None
+        if args.action == 'profile':
+            if inside_twin():
+                return _fail(args, '数字人不能刷新画像, 它每天会自动跑', code=3)
+            res = groups.profile_all(LarkClient(LarkAuth()), st, _owner_id())
+            msg = f"已刷新 {res['chats']} 个会话的画像; 新会话 {len(res['new'])} 个, 建议有变化 {res['changed']} 个"
+            return (_print_json({'ok': True, **res}) or 0) if args.json else (print(msg) or 0)
+        if not args.targets:
+            return _fail(args, f'用法: larkx groups {args.action} <名字>')
+        if args.action == 'add':
+            g = cs.create_group(args.targets[0], attention or 'light', keywords or [], bool(args.private))
+            _audit(st, 'group', '', f'建组 {g.name} {groups.ATTENTION[g.attention]}')
+            msg = f'已建组「{g.name}」({groups.ATTENTION[g.attention]}), 立即生效'
+        elif args.action in ('edit', 'remove'):
+            g = cs.group(args.targets[0])
+            if not g:
+                return _fail(args, f'没有组「{args.targets[0]}」, 用 larkx groups 查看')
+            if args.action == 'remove':
+                n = cs.delete_group(g.id)
+                _audit(st, 'group', '', f'删组 {g.name}')
+                msg = f'已删组「{g.name}」, {n} 个会话变成未分组'
+            else:
+                fields = {k: v for k, v in (('name', args.name), ('attention', attention or None),
+                                             ('keywords', keywords)) if v is not None}
+                if args.private is not None:
+                    fields['private'] = 1 if args.private else 0
+                if not fields:
+                    return _fail(args, '要改什么? --name / --attention / --keywords / --private / --no-private')
+                g = cs.update_group(g.id, **fields)
+                _audit(st, 'group', '', f'改组 {g.name}: {fields}')
+                msg = f'已更新组「{g.name}」, 立即生效'
+        else:  # assign
+            if args.to is None and attention is None:
+                return _fail(args, '要指定 --to <组名> 或 --attention <关注度|跟组>')
+            group_id = None
+            if args.to is not None:
+                g = cs.group(args.to) if args.to else None
+                if args.to and not g:
+                    return _fail(args, f'没有组「{args.to}」, 先 larkx groups add {args.to}')
+                group_id = g.id if g else 0
+            ids = _resolve_chats(args, cs, args.targets)
+            if ids is None:
+                return 1
+            cs.assign(ids, group_id=group_id, attention=attention)
+            names = '、'.join(r['name'] or r['chat_id'] for r in cs.view(ids))
+            _audit(st, 'group', ','.join(ids), f'归组 {names} -> {args.to or "-"} {attention or ""}')
+            msg = f'已调整 {names}, 立即生效'
+    except ValueError as e:
+        return _fail(args, str(e))
+    return (_print_json({'ok': True, 'message': msg}) or 0) if args.json else (print(msg) or 0)
 
 
 def cmd_sessions(args):
@@ -288,7 +427,13 @@ def cmd_messages(args):
     anchor = None
     if args.anchor is not None:
         anchor = args.anchor
-    rows = st.get_messages(args.chat_id, anchor=anchor, limit=args.limit)
+    since = None
+    if args.since:
+        try:
+            since = int(time.time() - state.parse_duration(args.since))
+        except ValueError as e:
+            return _fail(args, str(e))
+    rows = st.get_messages(args.chat_id, anchor=anchor, limit=args.limit, since_ts=since)
     if args.json:
         _print_json([{c.name: getattr(r, c.name) for c in r.__table__.columns} for r in rows])
         return 0
@@ -639,9 +784,16 @@ def cmd_say(args):
     return _fail(args, f'等待超时, 任务 #{task_id} 仍在排队或处理中; daemon 是否在运行? larkx service status')
 
 
+def _owner_id() -> str:
+    """本人的 user_id(读本地凭证, 不联网); 没登录时为空。"""
+    try:
+        return str(LarkAuth().user_id or '')
+    except Exception:
+        return ''
+
+
 def cmd_jobs(args):
     """例行任务: list 看每个任务的上次结果和下次时间; log 看运行记录; run 让 daemon 马上跑一次(数字人不能用)。"""
-    import time
     from . import jobs
     from .daemon.prompts import BUILDERS
     st, cfg, now = Storage(), load_config(), datetime.now()
@@ -665,7 +817,7 @@ def cmd_jobs(args):
         if args.preview:
             if job.kind != 'agent':
                 return _fail(args, f'{job.name} 不是交给数字人的任务, 没有提示词')
-            print(BUILDERS[job.name](cfg, st, now))
+            print(BUILDERS[job.name](cfg, st, now, _owner_id()))
             return 0
         cid = st.control_add(f'job:{job.name}')
         for _ in range(30):
@@ -948,16 +1100,31 @@ def main():
     p.add_argument('--mention', action='append', default=[], metavar='USER_ID:NAME', help='真实 @对象，可重复')
     p = sub.add_parser('config', help='查看生效中的配置(配置项写在 .env 里)')
     p.set_defaults(fn=cmd_config)
-    p = sub.add_parser('chats', help='列出本地会话')
+    p = sub.add_parser('chats', help='列出本地会话, 带分组和关注度')
+    p.add_argument('--attention', help='只看这些关注度, 逗号分隔: 重点关注,简单关注,只存不看')
+    p.add_argument('--group', help='只看这个组(含建议归到这个组的)')
+    p.add_argument('--active', help='最近多久有消息, 如 24h、7d')
+    p.add_argument('--feishu-muted', action='store_true', help='只看在飞书里设了免打扰的')
     p.add_argument('--limit', type=int, default=50)
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_chats)
+    p = sub.add_parser('groups', help='会话分组与关注度: 看、建、改、删组, 把会话归进组, 刷新画像')
+    p.add_argument('action', nargs='?', choices=['list', 'add', 'edit', 'remove', 'assign', 'profile'], default='list')
+    p.add_argument('targets', nargs='*', help='add/edit/remove: 组名; assign: 会话名或 chat_id(可多个)')
+    p.add_argument('--to', help='assign: 归到哪个组(空字符串 = 移出分组)')
+    p.add_argument('--attention', help='关注度: 重点关注 / 简单关注 / 只存不看; assign 时写「跟组」恢复跟组')
+    p.add_argument('--keywords', help='add/edit: 组关键词, 逗号分隔; 简单关注时这些词出现也算和你有关')
+    p.add_argument('--name', help='edit: 新组名')
+    p.add_argument('--private', action=argparse.BooleanOptionalAction, default=None, help='私人组: 内容不进工作记忆')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_groups)
     p = sub.add_parser('sessions', help='列出 agent 会话(session 表)')
     p.add_argument('--limit', type=int, default=50)
     p.set_defaults(fn=cmd_sessions)
     p = sub.add_parser('messages', help='读本地消息记录')
     p.add_argument('chat_id')
     p.add_argument('--anchor', default=None, help='话题 id;空字符串=仅主会话流')
+    p.add_argument('--since', help='只看最近多久的, 如 24h、7d')
     p.add_argument('--limit', type=int, default=50)
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_messages)

@@ -11,7 +11,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from .. import jobs
+from .. import groups, jobs
 from .prompts import BUILDERS
 from .triggers import build_system_prompt
 
@@ -53,7 +53,8 @@ class Maintenance:
             task.add_done_callback(self._tasks.discard)
         else:
             from . import Event
-            prompt = build_system_prompt(BUILDERS[job.name](self.d.cfg, self.d.storage, datetime.now()))
+            prompt = build_system_prompt(BUILDERS[job.name](self.d.cfg, self.d.storage, datetime.now(),
+                                                            str(self.d.auth.user_id)))
             await self.d.inbox.put(Event('system', prompt, chat_id=self.d.notifier.owner_chat(), ref=run.ref,
                                          run_id=run.id))
         return run
@@ -90,6 +91,16 @@ class Maintenance:
         except Exception as e:
             logger.exception(f'例行任务「{job.title}」失败')
             self._failed(run, repr(e))
+
+    # ---- 本地任务 ----
+
+    def _job_profile(self, run) -> str:
+        res = groups.profile_all(self.d.client, self.d.storage, str(self.d.auth.user_id))
+        if res['new']:
+            st = self.store.get_state('profile')
+            st['new_chats'] = sorted(set(st.get('new_chats', [])) | set(res['new']))
+            self.store.put_state('profile', st)
+        return f"{res['chats']} 个会话; 新会话 {len(res['new'])} 个; 建议有变化 {res['changed']} 个"
 
     def _failed(self, run, err: str):
         self.store.fail(run.id, err)

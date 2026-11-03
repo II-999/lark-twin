@@ -30,6 +30,7 @@ class FakeClient:
         self.people = []      # search 返回的结果(和 LarkClient.search 的格式一样)
         self.user_names = {}  # get_user_name 能查到的人
         self.searches = []
+        self.api_responses = {}
 
     def send_msg(self, text, chat_id, root_id=None, keep_unread=False):
         self.sent.append((chat_id, text))
@@ -58,6 +59,9 @@ class FakeClient:
 
     def api(self, type_or_cmd, data=None):
         self.api_calls.append((type_or_cmd, data))
+        r = self.api_responses.get(type_or_cmd)   # 按请求类型预置的返回: dict 或 data -> dict
+        if r is not None:
+            return r(data) if callable(r) else r
         return {'message': 'ok'}
 
 

@@ -85,7 +85,7 @@ class Storage:
         finally:
             s.close()
 
-    def get_messages(self, chat_id: str, anchor: str=None, limit=50, before_ts: int=None):
+    def get_messages(self, chat_id: str, anchor: str=None, limit=50, before_ts: int=None, since_ts: int=None):
         s = self.Session()
         try:
             q = s.query(Message).filter(Message.chat_id == str(chat_id))
@@ -93,6 +93,8 @@ class Storage:
                 q = q.filter(Message.anchor == anchor)
             if before_ts:
                 q = q.filter(Message.create_time < before_ts)
+            if since_ts:
+                q = q.filter(Message.create_time >= since_ts)
             rows = q.order_by(desc(Message.create_time)).limit(limit).all()
             rows.reverse()
             return rows

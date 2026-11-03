@@ -40,7 +40,14 @@ def _consolidate_at(cfg):
     return (hour if 0 <= hour <= 23 else 4, 0, weekday) if 0 <= weekday <= 6 else None
 
 
+def _before_review(cfg):
+    """回顾前半小时: 先刷新会话画像, 回顾时用上最新的关注度。关掉回顾时按 3:30。"""
+    hour = cfg.get('memory_review_hour', -1)
+    return ((hour - 1) % 24 if 0 <= hour <= 23 else 3, 30, None)
+
+
 JOBS = [
+    Job('profile', '会话画像', 'local', _before_review),
     Job('review', '每日回顾', 'agent', _review_at),
     Job('consolidate', '每周整理记忆', 'agent', _consolidate_at),
 ]
