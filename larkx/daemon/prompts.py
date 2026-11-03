@@ -30,6 +30,31 @@ BRIEFING_PROMPT = ('写今天的工作简报, 发到本人私聊。下面是代�
                    '没什么可报的也发一句"今天没有需要你处理的事"。发现某个会话分组明显不合适, 可以在末尾建议'
                    '(如: 「xx群」消息多但和你无关, 建议设为只存不看)。')
 BRIEFING_WEEKLY = '今天是周一, 末尾加「上周回顾 / 本周关注」两三条。'
+ORGANIZE_SCHEMA = '''{
+  "summary": "一句话说明这次整理了什么",
+  "groups": [{"name": "InfraBuddy", "attention": "重点关注", "private": false, "keywords": ["防劣化"],
+              "chats": ["会话名或 chat_id", ...], "reason": "为什么"}],
+  "labels": true,
+  "pin": [{"chat": "会话名或 chat_id", "reason": "..."}],
+  "unpin": [{"chat": "...", "reason": "..."}],
+  "pin_order": ["置顶从上到下的会话名或 chat_id", ...],
+  "flag": [{"chat": "...", "msg_id": "消息 id", "text": "消息摘要", "reason": "..."}],
+  "mute": ["会话名或 chat_id", ...], "mute_reason": "..."
+}'''
+ORGANIZE_PROMPT = ('{head}先读 memory/(尤其 我.md、事-*.md)了解本人的工作, 再按下面的现状写一份整理方案, 交给本人确认:\n'
+                   '1. 分组: 按本人的业务线、团队、项目划分(例如「团队核心」「某业务」「会议临时」「部门周知」「技术圈」'
+                   '「需要你处理的通知」「私人」), 每组定关注度: 重点关注(全读、进记忆) / 简单关注(只挑和本人有关的) / '
+                   '只存不看。私人组写 private; 可以给组加关键词(简单关注时提到这些词也算和本人有关)。已有的组沿用名字, '
+                   '只写需要变的。{scope}\n'
+                   '2. 置顶: 重点关注里常用却没置顶的建议置顶; 置顶了但 30 天没动静或明显无关的建议取消; 给出按组排的置顶顺序 '
+                   'pin_order。本人私人的置顶不要动。\n'
+                   '3. 标记: 找本人还没回、需要本人处理的消息, 建议标记(要写 msg_id, 用 larkx messages <chat_id> 查)。\n'
+                   '4. 免打扰: 只存不看、现在还会提醒本人的大群, 建议免打扰; 重点关注的不要免打扰。\n'
+                   '每条都要有理由, 没必要的改动不要提。写成 JSON 存到 downloads/organize.json, 运行 '
+                   'larkx organize submit downloads/organize.json(报错就按提示改了再提交)。方案由系统私信给本人, '
+                   '你不用发。{none}JSON 格式:\n{schema}\n\n现状:\n{context}')
+ORGANIZE_INIT_HEAD = '初始整理会话: 刚回填完最近的聊天并初始化了记忆, 现在给本人的全部会话做一次分组。'
+ORGANIZE_WEEKLY_HEAD = '每周整理会话: 看看分组、置顶、标记要不要调整。'
 # 维护任务的共同结尾: 不对外发消息, 最后一句话总结存进运行记录
 MAINTENANCE_TAIL = ' 不要发飞书消息。最后用一两句话说明这次记了或改了什么(会存进运行记录)。'
 
@@ -85,4 +110,15 @@ def briefing(cfg: dict, storage, now, owner_id: str = '', client=None, **kw) -> 
                                   weekly=BRIEFING_WEEKLY if data['weekly'] else '')
 
 
-BUILDERS = {'review': review, 'consolidate': consolidate, 'bootstrap': bootstrap, 'briefing': briefing}
+def _organize(head, scope, none):
+    def build(cfg: dict, storage, now, owner_id: str = '', client=None, **kw) -> str:
+        from .. import organize
+        return ORGANIZE_PROMPT.format(head=head, scope=scope, none=none, schema=ORGANIZE_SCHEMA,
+                                      context=organize.context(storage, client, owner_id)) + MAINTENANCE_TAIL
+    return build
+
+
+BUILDERS = {'review': review, 'consolidate': consolidate, 'bootstrap': bootstrap, 'briefing': briefing,
+            'organize_init': _organize(ORGANIZE_INIT_HEAD, '每个会话都要归到一个组(机器人推送、大群可以放进只存不看的组)。', ''),
+            'organize': _organize(ORGANIZE_WEEKLY_HEAD, '重点看新会话(未分组的)和关注度明显不合适的。',
+                                  '这周没有需要调整的就不提交, 直接说明即可。')}

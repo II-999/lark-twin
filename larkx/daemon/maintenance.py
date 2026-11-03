@@ -102,6 +102,9 @@ class Maintenance:
                 self.store.put_state('bootstrap', bs)
                 return None
             return f"batch-{bs['next'] + 1}"
+        if job.name == 'organize_init':
+            bs = self.store.get_state('bootstrap')
+            return 'once' if bs.get('done') else None  # 初始化记忆之后, 了解了本人的工作再提分组方案
         return None
 
     async def request(self, name: str) -> str:
@@ -123,6 +126,8 @@ class Maintenance:
             return
         if run.job == 'briefing':
             return self._briefing_done(ev, run, result)
+        if run.job in ('organize', 'organize_init') and result is not None and not result.is_error:
+            return self._organize_done(run, result)
         if result is not None and not result.is_error:
             self.store.finish(run.id, result.text or '')
             if run.job == 'bootstrap' and run.slot.startswith('batch-'):
@@ -132,6 +137,17 @@ class Maintenance:
             return
         err = ('agent 会话中断, 结果未知' if result is None else f'{result.subtype}: {result.text or ""}')
         self._failed(run, err)
+
+    def _organize_done(self, run, result):
+        """整理会话这一轮结束: 把数字人提交的方案私信给本人; 没提交说明这次不需要调整。"""
+        from ..organize import OrganizeStore
+        store = OrganizeStore(self.d.storage)
+        props = store.by_source(run.ref)
+        for p in props:
+            if self.d.notifier.send(store.render(p.id)):
+                store.mark_notified(p.id)
+        self.store.finish(run.id, (f"提交了方案 #{', #'.join(str(p.id) for p in props)}; " if props else '没有提交方案; ')
+                          + (result.text or ''))
 
     def _briefing_done(self, ev, run, result):
         """简报这一轮结束: 查审计里有没有真的发到本人私聊; 没发出就由代码直接发数据版兜底。"""

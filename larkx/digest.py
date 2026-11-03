@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 
 from . import groups, jobs
-from .storage.models import Message, Task
+from .storage.models import ChatProfile, Message, Task
 
 FOCUS_LIMIT = 15
 UNREPLIED_LIMIT = 20
@@ -71,6 +71,16 @@ def briefing_data(storage, owner_id: str, now: datetime = None, client=None) -> 
     store = jobs.JobStore(storage)
     broken = [jobs.describe(r) for r in store.log(limit=50)
               if r.status in ('failed', 'interrupted') and r.created_at and r.created_at >= now - timedelta(hours=hours)]
+    # 新加入的会话: 窗口内第一次画像、还没确认的(回填时一次画进来的不算)
+    bf_done = store.get_state('backfill').get('finished_at', 0)
+    s = storage.Session()
+    try:
+        fresh = [p.chat_id for p in s.query(ChatProfile).filter(ChatProfile.confirmed == 0,
+                 ChatProfile.created_at >= max(now - timedelta(hours=hours), datetime.fromtimestamp(bf_done + 600)))]
+    finally:
+        s.close()
+    new_chats = [{'name': r['name'], 'group': r['suggested_group'], 'attention': r['attention_name'], 'reason': r['reason']}
+                 for r in cs.view(fresh)]
     week = {}
     if weekly:
         for r in act:
@@ -79,6 +89,7 @@ def briefing_data(storage, owner_id: str, now: datetime = None, client=None) -> 
             'window': '过去 7 天' if weekly else '过去 24 小时',
             'unreplied': unreplied, 'flags': _flags(client, storage), 'focus': focus, 'light_related': light,
             'tasks': [{'id': t.id, 'due': _fmt(t.due_at), 'prompt': (t.prompt or '')[:100]} for t in tasks],
+            'new_chats': new_chats,
             'broken_jobs': [{'job': b['job'], 'status': b['status_name'], 'error': b['error'][:100]} for b in broken],
             'week': week}
 
@@ -107,6 +118,9 @@ def render(data: dict) -> str:
         lines.append('\n**简单关注的会话里和你有关的**')
         lines += [f"- 「{r['name']}」@你 {r['recent_at_me']} 次" + (' 〔免打扰群〕' if r['feishu_muted'] else '')
                   for r in data['light_related']]
+    if data.get('new_chats'):
+        lines.append('\n**新加入的会话**(已按建议先归类, 要调整就回「/ai 把 xx 归到 yy 组」)')
+        lines += [f"- 「{c['name']}」→ {c['group'] or '未分组'} · {c['attention']}({c['reason']})" for c in data['new_chats']]
     if data['week']:
         lines.append('\n**上周概况**: ' + '、'.join(f'{k} {v} 个会话有消息' for k, v in data['week'].items()))
     if data['broken_jobs']:

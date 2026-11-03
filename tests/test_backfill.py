@@ -129,7 +129,10 @@ def test_daemon_chain_backfill_profile_bootstrap(tmp_path, monkeypatch, fake_cli
     assert '第 2/2 批' in ev2.prompt and '最后一批' in ev2.prompt
     asyncio.run(obj._handle(ev2))
     asyncio.run(settle())
-    assert obj.inbox.qsize() == 0 and store.get_state('bootstrap')['done']
+    assert store.get_state('bootstrap')['done']
+    ev3 = obj.inbox.get_nowait()                                      # 初始化记忆之后提初始整理方案
+    assert ev3.ref.startswith('job:organize_init#') and 'larkx organize submit' in ev3.prompt
+    assert obj.inbox.qsize() == 0
 
 
 def test_agent_cannot_backfill():

@@ -900,6 +900,91 @@ def cmd_backfill(args):
     return 0
 
 
+def cmd_organize(args):
+    """整理方案: list/show 查看; submit 提交(数字人在整理任务里用); apply/reject/undo 执行、放弃、撤销(本人)。"""
+    from . import organize
+    st = Storage()
+    store = organize.OrganizeStore(st)
+    agent = is_agent_actor()
+    turn = state.read_turn() if agent else None
+    owner_turn = not agent or bool(turn and turn.get('is_owner') and turn.get('kind') in ('message', 'say'))
+    act = args.action
+    if act == 'list':
+        rows = [{'id': p.id, 'trigger': p.trigger, 'status': p.status, 'summary': p.summary,
+                 'created_at': p.created_at.strftime('%Y-%m-%d %H:%M'),
+                 'items': {k: sum(1 for i in store.items(p.id) if i.status == k)
+                           for k in ('pending', 'applied', 'failed', 'rejected', 'undone')}} for p in store.list(args.limit)]
+        if args.json:
+            _print_json(rows)
+            return 0
+        for r in rows:
+            counts = '、'.join(f"{organize_status(k)} {n}" for k, n in r['items'].items() if n)
+            print(f"#{r['id']} {r['created_at']} {organize.TRIGGER_NAMES.get(r['trigger'], r['trigger'])} [{r['status']}] {counts}"
+                  + (f": {r['summary']}" if r['summary'] else ''))
+        return 0
+    if act == 'submit':
+        ref = (turn or {}).get('ref', '')
+        if agent and not (owner_turn or (turn and turn.get('kind') == 'system' and ref.startswith('job:organize'))):
+            return _fail(args, '只有整理会话的例行任务或本人发起时才能提交整理方案', code=3)
+        if not args.target:
+            return _fail(args, '用法: larkx organize submit <方案 JSON 文件, - 表示从 stdin 读>')
+        try:
+            text = sys.stdin.read() if args.target == '-' else open(args.target, encoding='utf-8').read()
+            trigger = 'init' if ref.startswith('job:organize_init') else 'weekly' if ref.startswith('job:organize#') else 'manual'
+            p = store.submit(json.loads(text), trigger=trigger, source_ref=ref)
+        except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
+            return _fail(args, f'方案不合格: {e!r}')
+        _audit(st, 'organize', '', f'提交整理方案 #{p.id}')
+        if args.json:
+            _print_json({'ok': True, 'id': p.id, 'text': store.render(p.id)})
+        else:
+            print(store.render(p.id))
+        return 0
+    if act == 'propose':
+        if not owner_turn:
+            return _fail(args, '只有本人发起时才能要整理方案', code=3)
+        cid = st.control_add('job:organize')
+        return (print(f'已请 daemon 生成整理方案(控制请求 #{cid}), 写好后会私信给你') or 0)
+    prop = store.get(int(args.target)) if args.target and str(args.target).isdigit() else store.get()
+    if not prop:
+        return _fail(args, '还没有整理方案' if not args.target else f'没有整理方案 #{args.target}')
+    if act == 'show':
+        if args.json:
+            _print_json({'id': prop.id, 'status': prop.status, 'text': store.render(prop.id),
+                         'items': [{'seq': i.seq, 'kind': i.kind, 'title': i.title, 'reason': i.reason, 'status': i.status,
+                                    'error': i.error} for i in store.items(prop.id)]})
+        else:
+            print(store.render(prop.id))
+        return 0
+    if not owner_turn:
+        return _fail(args, '整理方案只有本人同意后才能执行或撤销', code=3)
+    try:
+        if act == 'undo':
+            res = store.undo(prop.id, organize.FeishuOps(LarkClient(LarkAuth())))
+        else:
+            seqs = organize.parse_items(args.items, len(store.items(prop.id)))
+            if act == 'reject':
+                n = store.reject(prop.id, seqs)
+                _audit(st, 'organize', '', f'放弃整理方案 #{prop.id} 第 {args.items or "全部"} 条')
+                return (print(f'已放弃 {n} 条') or 0)
+            res = store.apply(prop.id, seqs, organize.FeishuOps(LarkClient(LarkAuth())))
+    except ValueError as e:
+        return _fail(args, str(e))
+    _audit(st, 'organize', '', f'{"撤销" if act == "undo" else "执行"}整理方案 #{prop.id}: {res}')
+    if args.json:
+        _print_json({'ok': True, 'id': prop.id, 'results': [{'seq': s, 'result': r} for s, r in res]})
+    else:
+        for s, r in res:
+            print(f'{s}. {r}')
+        print(f'没有需要{"撤销" if act == "undo" else "执行"}的条目' if not res else
+              (f'撤销用: larkx organize undo {prop.id}' if act == 'apply' else ''))
+    return 0
+
+
+def organize_status(k):
+    return {'pending': '待定', 'applied': '已执行', 'failed': '失败', 'rejected': '已放弃', 'undone': '已撤销'}.get(k, k)
+
+
 def cmd_prune(args):
     """清理旧数据: 不带 --days 时按关注度和保留期清理消息、整理旧记录; 带 --days 时只清 --chat 指定的会话。数字人不能用。"""
     from . import groups, jobs, retention
@@ -1308,6 +1393,14 @@ def main():
     p.add_argument('--dry-run', action='store_true', help='只看会回填多少会话')
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_backfill)
+    p = sub.add_parser('organize', help='整理方案(分组、飞书标签、置顶、标记、免打扰): 看、提交、执行、放弃、撤销')
+    p.add_argument('action', nargs='?', choices=['list', 'show', 'submit', 'propose', 'apply', 'reject', 'undo'],
+                   default='show')
+    p.add_argument('target', nargs='?', help='show/apply/reject/undo: 方案编号(默认最新); submit: JSON 文件或 -')
+    p.add_argument('--items', default='', help='apply/reject: 第几条, 如 1-5,8; 不写 = 全部')
+    p.add_argument('--limit', type=int, default=20)
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_organize)
     p = sub.add_parser('prune', help='清理旧数据: 默认按关注度和保留期, 也可以 --days N --chat 会话 单独清; 数字人不能用')
     p.add_argument('--days', type=int, help='只保留最近多少天(要配合 --chat)')
     p.add_argument('--chat', action='append', default=[], help='会话名或 chat_id, 可重复')

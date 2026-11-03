@@ -75,6 +75,12 @@ def _briefing_at(cfg):
     return (t[0], t[1], None) if t else None
 
 
+def _organize_at(cfg):
+    """每周整理会话: 和每周整理记忆同一天, 回顾后 45 分钟。"""
+    c = _consolidate_at(cfg)
+    return (c[0], 45, c[2]) if c else None
+
+
 def _after_review(cfg):
     """回顾后半小时清理; 关掉回顾时按 4:30。"""
     hour = cfg.get('memory_review_hour', -1)
@@ -89,6 +95,8 @@ JOBS = [
     Job('briefing', '每日简报', 'report', _briefing_at, grace=3 * 3600),
     Job('backfill', '回填历史', 'local', _backfill_on, once=True, max_attempts=3),
     Job('bootstrap', '初始化记忆', 'agent', _bootstrap_on, once=True),
+    Job('organize_init', '初始整理会话', 'agent', _bootstrap_on, once=True),
+    Job('organize', '每周整理会话', 'agent', _organize_at),
 ]
 
 

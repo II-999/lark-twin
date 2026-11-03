@@ -125,3 +125,13 @@ def test_doctor_briefing(monkeypatch):
     monkeypatch.setattr(notify, '_load', lambda: {'owner_chat': 'self'})
     assert doctor.check_briefing(dict(DEFAULTS))['level'] == 'ok'
     assert doctor.check_briefing(dict(DEFAULTS, briefing_at='9点'))['level'] == 'fail'
+
+
+def test_new_chats_listed(st):
+    from larkx import jobs as J
+    J.JobStore(st).put_state('backfill', {'done': True, 'finished_at': time.time() - 3 * 86400})
+    d = digest.briefing_data(st, OWNER)
+    assert {c['name'] for c in d['new_chats']} == {'项目群', '李四', '大群', '告警群'}
+    groups.ChatStore(st).assign(['g1'], attention='light')                 # 确认过的不算新会话
+    d = digest.briefing_data(st, OWNER)
+    assert '项目群' not in {c['name'] for c in d['new_chats']} and '新加入的会话' in digest.render(d)
