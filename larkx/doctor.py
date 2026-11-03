@@ -169,6 +169,24 @@ def check_jobs(cfg, storage=None):
     return _check('例行任务', OK, f'{ran} 个任务有运行记录, 都正常' if ran else '还没跑过, 到点会自动运行(larkx jobs 查看计划)')
 
 
+def check_backfill(cfg, storage=None):
+    """首次回填和初始化记忆的进度。"""
+    from . import jobs
+    from .storage import Storage
+    if int(cfg.get('backfill_days') or 0) <= 0:
+        return _check('历史回填', OK, '已关闭(LARKX_BACKFILL_DAYS=0)')
+    store = jobs.JobStore(storage or Storage())
+    bf, bs = store.get_state('backfill'), store.get_state('bootstrap')
+    if not bf:
+        return _check('历史回填', WARN, f'还没做: daemon 启动后会自动回填最近 {cfg["backfill_days"]} 天', 'larkx service status 确认服务在运行')
+    progress = f"{bf.get('chats_done', 0)}/{len(bf.get('order') or [])} 个会话, {bf.get('messages', 0)} 条"
+    if not bf.get('done'):
+        return _check('历史回填', OK, f'进行中: {progress}')
+    memo = '记忆已初始化' if bs.get('done') else (
+        f"初始化记忆中: {bs.get('next', 0)}/{-(-len(bs.get('chats') or []) // 8) or '?'} 批" if bs else '等待初始化记忆')
+    return _check('历史回填', OK, f'已完成: {progress}; {memo}')
+
+
 def run(skip_model=False) -> list:
     cfg = load_config()
     checks = [check_login(), *check_config(cfg), check_agent_cli(cfg)]
@@ -178,4 +196,5 @@ def run(skip_model=False) -> list:
     checks.append(check_alert_channel(cfg))
     checks.append(check_user_skills())
     checks.append(check_jobs(cfg))
+    checks.append(check_backfill(cfg))
     return checks

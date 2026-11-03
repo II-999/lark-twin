@@ -28,6 +28,7 @@ class Job:
     grace: int = 0   # 到点后超过这么多秒还没开始就不跑了, 记为跳过(0 = 当天内都补)
     max_attempts: int = 2
     retry_after: int = 1800
+    once: bool = False  # 一次性任务(回填、初始化记忆): 不按钟点, 由 daemon 判断时机并给出时段名
 
 
 def _review_at(cfg):
@@ -46,6 +47,14 @@ def _before_review(cfg):
     return ((hour - 1) % 24 if 0 <= hour <= 23 else 3, 30, None)
 
 
+def _backfill_on(cfg):
+    return (0, 0, None) if int(cfg.get('backfill_days') or 0) > 0 else None
+
+
+def _bootstrap_on(cfg):
+    return (0, 0, None) if int(cfg.get('backfill_days') or 0) > 0 and 0 <= cfg.get('memory_review_hour', -1) <= 23 else None
+
+
 def _after_review(cfg):
     """回顾后半小时清理; 关掉回顾时按 4:30。"""
     hour = cfg.get('memory_review_hour', -1)
@@ -57,6 +66,8 @@ JOBS = [
     Job('review', '每日回顾', 'agent', _review_at),
     Job('consolidate', '每周整理记忆', 'agent', _consolidate_at),
     Job('prune', '清理旧数据', 'local', _after_review),
+    Job('backfill', '回填历史', 'local', _backfill_on, once=True, max_attempts=3),
+    Job('bootstrap', '初始化记忆', 'agent', _bootstrap_on, once=True),
 ]
 
 
@@ -77,9 +88,9 @@ def slot(job: Job, cfg: dict, now: datetime):
 
 
 def next_time(job: Job, cfg: dict, now: datetime) -> Optional[datetime]:
-    """下一次计划时间(只用来展示)。"""
+    """下一次计划时间(只用来展示); 一次性任务没有。"""
     when = job.when(cfg)
-    if when is None:
+    if when is None or job.once:
         return None
     hour, minute, weekday = when
     for days in range(8):
@@ -176,9 +187,9 @@ class JobStore:
         finally:
             s.close()
 
-    def due(self, job: Job, cfg: dict, now: datetime):
-        """该不该跑: None 不跑; ('skip', 时段) 错过时间; ('run', 时段, 第几次)。"""
-        cur = slot(job, cfg, now)
+    def due(self, job: Job, cfg: dict, now: datetime, cur=None):
+        """该不该跑: None 不跑; ('skip', 时段) 错过时间; ('run', 时段, 第几次)。一次性任务由调用方给出 cur=(时段, 计划时间)。"""
+        cur = cur if job.once else slot(job, cfg, now)
         if not cur:
             return None
         key, planned = cur

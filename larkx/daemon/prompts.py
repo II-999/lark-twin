@@ -16,6 +16,13 @@ REVIEW_PROMPT = ('每日回顾(最近 24 小时)。下面是有动静的会话, 
 CONSOLIDATE_PROMPT = ('每周整理记忆: 通读 memory/ 下的全部文件。合并主题重复的文件; 删掉已经办完的跟进、过期的安排和不再成立的内容; '
                       '每条事实注明最后确认的日期; 超过 60 天没再出现、也不再相关的内容移到 memory/archive/ 并从索引里去掉; '
                       'MEMORY.md 一个主题一行, 保持在 60 行以内。')
+BOOTSTRAP_PROMPT = ('初始化记忆(第 {i}/{n} 批)。刚从飞书回填了本人最近 {days} 天的聊天, 先了解本人的工作。'
+                    '下面是本人重点关注的会话, 逐个用 larkx messages <chat_id> --since {days}d --limit 200 看:\n{chats}\n'
+                    '整理进 memory/: 我.md(本人的角色、负责的事、常合作的人和协作方式), 人-<名字>.md(和本人的关系、在做什么、'
+                    '习惯和偏好), 群-<群名>.md(这个群做什么、有哪些人、本人在里面的角色), 事-<主题>.md(进行中的工作和待跟进, '
+                    '写清楚谁、做什么、什么时候)。只记稳定有用的事实, 每条写上日期; 已有同主题的文件就合并更新, 不要重复新建; '
+                    '更新 memory/MEMORY.md 索引。{last}')
+BOOTSTRAP_LAST = '这是最后一批: 最后通读一遍 memory/, 把重复的合并, 索引整理好。'
 # 维护任务的共同结尾: 不对外发消息, 最后一句话总结存进运行记录
 MAINTENANCE_TAIL = ' 不要发飞书消息。最后用一两句话说明这次记了或改了什么(会存进运行记录)。'
 
@@ -47,4 +54,21 @@ def consolidate(cfg: dict, storage, now, owner_id: str = '') -> str:
     return CONSOLIDATE_PROMPT + MAINTENANCE_TAIL
 
 
-BUILDERS = {'review': review, 'consolidate': consolidate}
+def bootstrap(cfg: dict, storage, now, owner_id: str = '') -> str:
+    from .. import groups, jobs
+    from .maintenance import BOOTSTRAP_BATCH, bootstrap_chats
+    st = jobs.JobStore(storage).get_state('bootstrap')
+    ids = st.get('chats') or bootstrap_chats(storage)
+    n = max(1, -(-len(ids) // BOOTSTRAP_BATCH))
+    i = min(st.get('next', 0), n - 1)
+    rows = {r['chat_id']: r for r in groups.ChatStore(storage).view(ids[i * BOOTSTRAP_BATCH:(i + 1) * BOOTSTRAP_BATCH])}
+    lines = []
+    for cid in ids[i * BOOTSTRAP_BATCH:(i + 1) * BOOTSTRAP_BATCH]:
+        r = rows[cid]
+        lines.append(f"- {r['name'] or '(未命名)'} ({cid}) 组「{r['group'] or r['suggested_group']}」: "
+                     f"{r['msgs']} 条, 本人 {r['owner_msgs']} 条")
+    return BOOTSTRAP_PROMPT.format(i=i + 1, n=n, days=int(cfg.get('backfill_days') or 30), chats='\n'.join(lines),
+                                   last=BOOTSTRAP_LAST if i == n - 1 else '') + MAINTENANCE_TAIL
+
+
+BUILDERS = {'review': review, 'consolidate': consolidate, 'bootstrap': bootstrap}

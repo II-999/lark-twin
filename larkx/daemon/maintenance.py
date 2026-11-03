@@ -11,11 +11,18 @@ from datetime import datetime
 
 from loguru import logger
 
-from .. import groups, jobs, retention
+from .. import backfill, groups, jobs, retention
 from .prompts import BUILDERS
 from .triggers import build_system_prompt
 
 ALERT_COOLDOWN = 6 * 3600
+BOOTSTRAP_BATCH = 8
+
+
+def bootstrap_chats(storage) -> list:
+    """初始化记忆要看的会话: 重点关注(私人组除外), 30 天消息多的在前。"""
+    rows = [r for r in groups.ChatStore(storage).view() if r['attention'] == 'focus' and not r['private']]
+    return [r['chat_id'] for r in sorted(rows, key=lambda r: -(r['msgs'] or 0))]
 
 
 class Maintenance:
@@ -36,7 +43,13 @@ class Maintenance:
     async def tick(self, now: datetime = None):
         now = now or datetime.now()
         for job in jobs.JOBS:
-            due = self.store.due(job, self.d.cfg, now)
+            if job.once:
+                if job.when(self.d.cfg) is None:
+                    continue
+                key = self._once_slot(job)
+                due = self.store.due(job, self.d.cfg, now, cur=(key, now)) if key else None
+            else:
+                due = self.store.due(job, self.d.cfg, now)
             if not due:
                 continue
             if due[0] == 'skip':
@@ -59,6 +72,30 @@ class Maintenance:
                                          run_id=run.id))
         return run
 
+    def _once_slot(self, job: jobs.Job):
+        """一次性任务现在该不该跑, 该跑时返回时段名。"""
+        if job.name == 'backfill':
+            done = self.store.get_state('backfill').get('done')
+            # 等启动后第一轮补收结束: 那一轮给最近的会话记好了核对位置, 回填只拉位置以下的
+            return None if done or getattr(self.d, '_feed_since', None) is None else 'once'
+        if job.name == 'bootstrap':
+            bf, bs = self.store.get_state('backfill'), self.store.get_state('bootstrap')
+            if not bf.get('done') or bs.get('done'):
+                return None
+            prof = self.store.last('profile', status=('ok',))
+            if not prof or not prof.finished_at or prof.finished_at.timestamp() < bf.get('finished_at', 0):
+                return None  # 回填后的画像还没跑完
+            if 'chats' not in bs:
+                bs['chats'] = bootstrap_chats(self.d.storage)
+                bs['next'] = 0
+                self.store.put_state('bootstrap', bs)
+            if bs['next'] * BOOTSTRAP_BATCH >= len(bs['chats']):
+                bs['done'] = True
+                self.store.put_state('bootstrap', bs)
+                return None
+            return f"batch-{bs['next'] + 1}"
+        return None
+
     async def request(self, name: str) -> str:
         """手动立即运行(网页"立即运行"、larkx jobs run)。"""
         job = jobs.get(name)
@@ -78,6 +115,10 @@ class Maintenance:
             return
         if result is not None and not result.is_error:
             self.store.finish(run.id, result.text or '')
+            if run.job == 'bootstrap' and run.slot.startswith('batch-'):
+                bs = self.store.get_state('bootstrap')
+                bs['next'] = max(bs.get('next', 0), int(run.slot[6:]))
+                self.store.put_state('bootstrap', bs)
             return
         err = ('agent 会话中断, 结果未知' if result is None else f'{result.subtype}: {result.text or ""}')
         self._failed(run, err)
@@ -88,6 +129,8 @@ class Maintenance:
             summary = await asyncio.to_thread(getattr(self, f'_job_{job.name}'), run)
             self.store.finish(run.id, summary if isinstance(summary, str) else json.dumps(summary, ensure_ascii=False))
             logger.info(f'例行任务「{job.title}」完成: {summary}')
+            if job.name == 'backfill' and self.store.get_state('backfill').get('done'):
+                await self.start(jobs.get('profile'), 'after-backfill', 'chain')  # 接着画像, 然后初始化记忆
         except Exception as e:
             logger.exception(f'例行任务「{job.title}」失败')
             self._failed(run, repr(e))
@@ -107,6 +150,20 @@ class Maintenance:
         res = retention.run(self.d.cfg, self.d.storage, state=st)
         self.store.put_state('prune', st)
         return retention.summary(res)
+
+    def _job_backfill(self, run) -> str:
+        saved = self.store.get_state('backfill')
+
+        def progress(st):
+            if st.get('done') and not st.get('finished_at'):
+                st['finished_at'] = datetime.now().timestamp()
+            self.store.put_state('backfill', st)
+        bf = backfill.Backfill(self.d.client, self.d.storage, str(self.d.auth.user_id),
+                               int(self.d.cfg.get('backfill_days') or 30), saved=saved, progress=progress)
+        res = bf.run()
+        if not res['done']:
+            raise RuntimeError(backfill.summary(res))
+        return backfill.summary(res)
 
     def _failed(self, run, err: str):
         self.store.fail(run.id, err)

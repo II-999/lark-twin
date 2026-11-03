@@ -11,7 +11,7 @@ from .storage import Storage
 
 # 数字人(LARKX_ACTOR=agent)不能用的子命令: 原始网关接口、登录凭证、再起一个监听进程、管理自己的服务、
 # 以本人身份给自己下指令(say)、改本机 agent 的 skill
-AGENT_FORBIDDEN = {'api', 'auth', 'listen', 'daemon', 'service', 'doctor', 'say', 'skill', 'web', 'prune'}
+AGENT_FORBIDDEN = {'api', 'auth', 'listen', 'daemon', 'service', 'doctor', 'say', 'skill', 'web', 'prune', 'backfill'}
 
 
 def _print_json(obj):
@@ -844,6 +844,62 @@ def cmd_jobs(args):
     return 0
 
 
+def cmd_backfill(args):
+    """回填历史消息(首次启动时 daemon 会自动做一次)。数字人不能用。"""
+    from datetime import timedelta
+    from . import backfill, groups, jobs
+    st, cfg = Storage(), load_config()
+    store = jobs.JobStore(st)
+    days = args.days or int(cfg.get('backfill_days') or 30)
+    running = store.last('backfill')
+    if running and running.status == 'running' and running.started_at and \
+            running.started_at > datetime.now() - timedelta(minutes=30):
+        return _fail(args, 'daemon 正在回填, 进度用 larkx jobs 查看')
+    client = LarkClient(LarkAuth())
+    owner = str(client.auth.user_id)
+    if args.dry_run:
+        ids = args.chat or client.feed_chats(time.time() - days * 86400, max_pages=50)
+        print(f'最近 {days} 天有更新的会话 {len(ids)} 个; 每个最多 {backfill.PER_CHAT} 条(测试/机器人类只拉 '
+              f'{backfill.LOW_VALUE_DAYS} 天、最多 {backfill.LOW_VALUE_CAP} 条), 总量上限 {backfill.TOTAL_CAP} 条')
+        return 0
+
+    def show(s):
+        print(f"\r  {s.get('chats_done', 0)}/{len(s.get('order') or [])} 个会话, 入库 {s.get('messages', 0)} 条", end='',
+              flush=True, file=sys.stderr)
+    if args.chat:
+        ids = _resolve_chats(args, groups.ChatStore(st), args.chat)
+        if ids is None:
+            return 1
+        res = backfill.Backfill(client, st, owner, days, progress=show).run(only=ids)
+    else:
+        saved = {} if args.again else store.get_state('backfill')
+        if saved.get('done'):
+            return _fail(args, '已经回填过了; 要重新回填用 --again, 只补某个会话用 --chat')
+
+        def progress(s):
+            if s.get('done') and not s.get('finished_at'):
+                s['finished_at'] = time.time()
+            store.put_state('backfill', s)
+            show(s)
+        run = store.create('backfill', f'manual-{int(time.time())}', 'manual')
+        store.start(run.id)
+        try:
+            res = backfill.Backfill(client, st, owner, days, saved=saved, progress=progress).run()
+        except Exception as e:
+            store.fail(run.id, repr(e))
+            raise
+        store.finish(run.id, backfill.summary(res))
+        prof = store.create('profile', 'after-backfill', 'manual')
+        r = groups.profile_all(client, st, owner)
+        store.finish(prof.id, f"{r['chats']} 个会话; 新会话 {len(r['new'])} 个")
+    print(file=sys.stderr)
+    if args.json:
+        _print_json({'ok': True, **res})
+    else:
+        print(backfill.summary(res) + ('' if args.chat else '; 会话画像已刷新, daemon 接着会初始化记忆'))
+    return 0
+
+
 def cmd_prune(args):
     """清理旧数据: 不带 --days 时按关注度和保留期清理消息、整理旧记录; 带 --days 时只清 --chat 指定的会话。数字人不能用。"""
     from . import groups, jobs, retention
@@ -1245,6 +1301,13 @@ def main():
     p.add_argument('--preview', action='store_true', help='run: 只打印交给数字人的提示词, 不运行')
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_jobs)
+    p = sub.add_parser('backfill', help='回填历史消息(首次启动时会自动做一次); 数字人不能用')
+    p.add_argument('--days', type=int, help='回填最近多少天, 默认 LARKX_BACKFILL_DAYS')
+    p.add_argument('--chat', action='append', default=[], help='只回填这个会话(名字或 chat_id), 可重复')
+    p.add_argument('--again', action='store_true', help='已经回填过也重新回填一遍')
+    p.add_argument('--dry-run', action='store_true', help='只看会回填多少会话')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_backfill)
     p = sub.add_parser('prune', help='清理旧数据: 默认按关注度和保留期, 也可以 --days N --chat 会话 单独清; 数字人不能用')
     p.add_argument('--days', type=int, help='只保留最近多少天(要配合 --chat)')
     p.add_argument('--chat', action='append', default=[], help='会话名或 chat_id, 可重复')

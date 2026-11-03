@@ -53,6 +53,8 @@ DEFAULTS = {
     "retention_archive_days": 30,
     # 简单关注的会话, 消息保留多少天; 0 = 一直保留。重点关注的会话一直保留
     "retention_light_days": 0,
+    # 首次启动回填最近多少天的聊天(只回填一次, 之后靠长连接和补收); 0 = 不回填
+    "backfill_days": 30,
     # 数字人发出的消息末尾自动加上的签名, 如 "🤖 lark-twin · 数字分身"; 和正文隔一个空行, 前面加 "—— "。留空不加
     "reply_signature": "",
     # 数字人在别的会话以本人名义发消息时, 抄送一份到本人私聊
@@ -138,7 +140,7 @@ def load_config() -> dict:
     cfg["memory_flush_ratio"] = float(cfg["memory_flush_ratio"])
     for key in ("send_rate_limit", "inbox_max_age", "catchup_interval", "takeover_default", "web_port",
                 "deny_reply_cooldown", "memory_consolidate_weekday",
-                "retention_archive_days", "retention_light_days"):
+                "retention_archive_days", "retention_light_days", "backfill_days"):
         cfg[key] = int(cfg[key])
     # LARKX_DENY_REPLY 写成空的是关掉这个功能, 不能像别的配置一样当成没写、退回默认值
     if os.environ.get("LARKX_DENY_REPLY") is not None:
