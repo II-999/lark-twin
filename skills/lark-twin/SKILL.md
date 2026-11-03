@@ -37,6 +37,15 @@ uv venv && uv pip install -e .
 | `LARKX_TRIGGER_OWNER_ONLY` | 只有本人能唤起，默认关。只在唤起白名单为空时起作用；用户想让少数几个人也能叫起数字人，不改它，用 `larkx whitelist add` 加人 |
 | `LARKX_DENY_REPLY` | 没权限的人想唤起（私聊发 `/ai`、群里 @ 本人发 `/ai`）时 daemon 自动引用回复的一句话，不经过 agent。默认"你没有权限唤起{owner}的 lark-twin"（`{owner}` 是用户的名字）；用户不想回就设成空 `LARKX_DENY_REPLY=`。`LARKX_DENY_REPLY_COOLDOWN` 是同一会话同一人多少秒内只回一次，默认 600 |
 
+信息整理相关的几项一般用默认值，用户有要求再改：
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `LARKX_BACKFILL_DAYS` | 30 | 首次启动回填多少天的聊天，0 不回填 |
+| `LARKX_BRIEFING_AT` | `09:00` | 每日简报的时间，`off` 关闭 |
+| `LARKX_MEMORY_CONSOLIDATE_WEEKDAY` | 0 | 每周几整理记忆并给出会话整理方案，-1 关闭 |
+| `LARKX_RETENTION_ARCHIVE_DAYS` / `LARKX_RETENTION_LIGHT_DAYS` | 30 / 0 | 只存不看、简单关注的会话消息保留天数，0 一直保留 |
+
 `.env` 里写了 key 时，执行 `chmod 600 .env`。不要把 key 的内容输出到对话里。
 
 ### 3. 飞书扫码登录（需要用户本人操作）
@@ -95,6 +104,8 @@ uv venv && uv pip install -e .
 
 看到 `[agent] message ... 结束: success` 并且飞书里收到回复，部署就完成了。也可以直接用 `.venv/bin/larkx say --wait "你好，介绍一下你自己"` 从终端测试。
 
+接下来分身会自己做首次整理，告诉用户大概的节奏：第一轮补收结束后回填最近 30 天的聊天（几分钟到半小时），接着给会话画像、按重点会话初始化记忆，然后把一份整理方案（分组、飞书标签、置顶、标记、免打扰）私信给用户确认；第二天早上收到第一份简报。进度看 `.venv/bin/larkx jobs` 或网页总览。
+
 ## 日常运维
 
 | 要做的事 | 命令 |
@@ -109,6 +120,10 @@ uv venv && uv pip install -e .
 | 卸载服务 | `.venv/bin/larkx service uninstall` |
 | 全面检查 | `.venv/bin/larkx doctor` |
 | 网页控制台登录链接 | `.venv/bin/larkx web url`；令牌泄露了用 `larkx web reset-token` |
+| 例行任务（回顾、简报、整理、清理、回填） | `.venv/bin/larkx jobs` 看状态和下次时间，`jobs log --job <名字>` 看记录，`jobs run <名字>` 立即跑一次；网页"例行任务"页 |
+| 会话分组和关注度 | `.venv/bin/larkx groups` / `larkx chats`，按名字调整：`larkx groups assign <会话名> --to <组名>` 或 `--attention 只存不看`；网页"会话"页。立即生效 |
+| 整理方案 | `.venv/bin/larkx organize show` 看最新一份，`apply <编号> --items 1-5`、`reject`、`undo` 执行、放弃、撤销；网页"整理"页 |
+| 清理旧数据 | 每天自动按关注度清理；手动 `.venv/bin/larkx prune --dry-run` 先看会删多少 |
 | 管理谁能唤起数字人 | `.venv/bin/larkx whitelist list` / `add <名字或 user_id>` / `remove <名字或 user_id>`，或者网页控制台的"白名单"页。白名单非空时只有本人和名单里的人能唤起，为空时看 `LARKX_TRIGGER_OWNER_ONLY`。改动立即生效，不用重启。加人前和用户确认是哪一个（同名的看部门和 user_id）。没权限的人想唤起时会自动收到 `LARKX_DENY_REPLY`（`whitelist list` 第二行有说明） |
 
 数字人的人设和行为准则在 `~/.larkx/agent/CLAUDE.md`，长期记忆在 `~/.larkx/agent/memory/`，两处都可以直接修改。这个目录是一个 git 仓库，每轮的变化都会自动提交，改坏了可以用 git 回退。修改人设后，新会话一定会读到新内容：用户在飞书发 `/ai /clear` 即可开新会话，长期记忆会保留。`/ai /stop` 用来打断当前任务。这两个命令只有用户本人发才生效。
@@ -117,6 +132,9 @@ uv venv && uv pip install -e .
 
 | 现象 | 处理 |
 |---|---|
+| 没收到每日简报 | `larkx jobs log --job briefing` 看原因；doctor 的"每日简报"一项检查时间格式和本人私聊。超过 3 小时没发出的那天会跳过 |
+| 某个会话分错了组 | `larkx groups assign <会话名> --to <组名>` 或网页"会话"页改，立即生效；之后画像不会再改它 |
+| 首次回填一直没开始 | 回填要等启动后第一轮补收结束；`larkx jobs` 看 backfill 的状态，失败时 `jobs log --job backfill` |
 | 发了消息没反应 | 先看 `service logs`。日志里没有这条消息，说明监听有问题，检查登录和网络。有这条消息但没有"结束"，说明 agent 在处理或卡住了。消息没有被交给数字人，检查触发前缀；如果是自己发给自己，还要检查 `LARKX_ALLOW_SELF` |
 | 日志里有"凭证已过期"或"会话已被服务端注销" | 请用户重新执行 `.venv/bin/larkx auth qr`，然后 `service restart` |
 | doctor 显示"模型调用"失败 | Claude：检查 `LARKX_CLAUDE_CLI` 指定的命令在终端里能否正常启动 Claude Code。Codex：检查 `codex` 在终端里能否正常对话；如果报 "workspace routing discovery" 或连接超时，多半是代理问题，在 `.env` 设置大写的 `HTTPS_PROXY`；如果报模型不支持，设置 `LARKX_AGENT_MODEL`。改完先 `service install` 刷新 PATH，再 `restart` |
