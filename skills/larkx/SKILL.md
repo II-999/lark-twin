@@ -149,6 +149,20 @@ larkx chats --attention 重点关注 --active 7d          # 按关注度、活�
 larkx prune --dry-run                                # 按保留天数清理旧消息, 先看会删多少; --days N --chat 会话 单独清
 ```
 
+## 整理方案
+
+打开 `LARKX_CHAT_GROUPS` 和 `LARKX_ORGANIZE` 后，分身会提出分类、飞书标签、置顶、标记、免打扰的调整，私信给本人。改的只是本人自己飞书里的设置，不对外发消息。
+
+```bash
+larkx organize show                      # 最新方案, 每条有编号和理由
+larkx organize apply --items 1-5,8       # 同意哪几条执行哪几条; 不写 --items 是全部
+larkx organize reject --items 3          # 放弃
+larkx organize undo 2                    # 撤销方案 #2 里已执行的条目(按执行前的快照恢复)
+larkx organize propose                   # 马上要一份新方案
+```
+
+也可以在私聊里直接回数字人「同意 1-5,8」「第 3 条不要」，或者在网页「整理」页勾选。
+
 ## 回填、简报、记忆
 
 ```bash

@@ -59,6 +59,9 @@ DEFAULTS = {
     "bot_action_keywords": "",
     # 结构化记忆: 记忆文件开头写字段(类型、相关的人和群、状态、截止日期), memory/MEMORY.md 改由代码按字段生成; 默认关
     "memory_structured": False,
+    # 整理方案: 分身按本人的工作提出分类、飞书标签、置顶、标记、免打扰的调整, 本人同意哪条执行哪条, 都能撤销。
+    # 要先打开 chat_groups。打开后: 回填并初始化记忆后(没回填就在第一次画像后)提一次, 之后每周一次; 默认关
+    "organize": False,
     # 首次启动回填最近多少天的聊天(只回填一次, 之后靠长连接和补收), 回填完接着初始化记忆; 0 = 不回填(默认)
     "backfill_days": 0,
     # 每天几点给本人私聊发工作简报(HH:MM, 如 09:00, 周一附上周回顾); 空或 off 关闭(默认)。超过 3 小时没发出就不发了
@@ -138,7 +141,7 @@ def load_config() -> dict:
         v = os.environ.get("LARKX_" + key.upper())
         if v:
             cfg[key] = v
-    for key in ("mark_read", "keep_unread", "allow_self", "mirror", "chat_groups", "memory_structured"):
+    for key in ("mark_read", "keep_unread", "allow_self", "mirror", "chat_groups", "memory_structured", "organize"):
         if isinstance(cfg.get(key), str):
             cfg[key] = _as_bool(cfg[key])
     # LARKX_AGENT_CLI 是 claude_cli 的旧名

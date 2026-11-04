@@ -67,6 +67,7 @@ larkx jobs                       # 每日回顾等例行任务的上次结果和
 larkx groups                     # 会话分类和关注度; groups assign <会话名> --to <分类名> 按名字调整
 larkx chats --attention 重点关注 # 按关注度、活跃时间筛会话(打开 LARKX_CHAT_GROUPS 后)
 larkx prune --dry-run            # 按保留天数清理旧消息, 先看会删多少
+larkx organize show              # 看最新的整理方案; organize apply --items 1-5,8 执行、reject 放弃、undo <编号> 撤销
 larkx backfill --dry-run         # 回填最近的聊天历史, 先看规模(打开 LARKX_BACKFILL_DAYS 后启动时自动做一次)
 larkx memory list --type 事 --status 待跟进   # 按字段筛记忆; memory lint 检查、memory stats 统计(结构化记忆)
 larkx recall <msg_id>            # 撤回一条
@@ -126,6 +127,7 @@ larkx rule delete 1
 | `LARKX_DENY_REPLY` / `LARKX_DENY_REPLY_COOLDOWN` | 没权限的人发 `/ai` 时自动回的一句话（`{owner}` 换成你的名字，设成空关掉）· 同一会话同一人多少秒内只回一次，默认 600 |
 | `LARKX_CHAT_GROUPS` | 会话分类与关注度，默认关。打开后每天给会话画像，每日回顾只看重点和简单关注的会话 |
 | `LARKX_RETENTION_ARCHIVE_DAYS` / `LARKX_RETENTION_LIGHT_DAYS` | 只存不看、简单关注的会话消息保留天数，默认 0 一直保留；要打开会话分类才生效，没画像的会话不删 |
+| `LARKX_ORGANIZE` | 整理方案：分身提出分类、飞书标签、置顶、标记、免打扰的调整，本人同意后执行、可撤销，默认关（要先打开会话分类） |
 | `LARKX_BACKFILL_DAYS` | 首次启动回填最近多少天的聊天，回填完分批初始化记忆，默认 0 不回填 |
 | `LARKX_BRIEFING_AT` | 每天几点私信本人工作简报（如 `09:00`，周一附上周回顾），默认关 |
 | `LARKX_MEMORY_STRUCTURED` | 结构化记忆：记忆文件开头写字段，`MEMORY.md` 由代码生成，默认关 |

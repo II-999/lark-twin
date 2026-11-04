@@ -155,6 +155,12 @@ larkx messages <chat_id> --since 24h --json                  # 只看最近一�
 
 关注度：重点关注（每条都看、进记忆）、简单关注（只管和本人有关的）、只存不看（不进回顾）。飞书里的免打扰只是本人的提醒设置，不影响关注度。
 
+## 整理方案
+
+- 整理会话的例行任务里：按提示写好 JSON，`larkx organize submit downloads/organize.json` 提交，系统会私信给本人，你不用发。
+- 本人在私聊里回「同意 1-5,8」「全部同意」「第 3 条不要」「撤销」时，分别用 `larkx organize apply --items 1-5,8`、`apply`、`reject --items 3`、`undo <编号>`。只有本人发起的轮次能执行。
+- 本人说「整理一下我的会话」时用 `larkx organize propose`。
+
 ## 长期记忆的字段（打开结构化记忆时）
 
 每日回顾、整理记忆的提示里会给出记忆文件的格式：一个主题一个文件，开头写 `type`、`name`、`updated` 等字段，`MEMORY.md` 由代码生成，不用手改。

@@ -103,3 +103,20 @@ def test_jobs_show_backfill_state(client):
     d = client.get('/api/jobs').json()
     assert d['backfill']['order'] == ['a'] and {j['name']: j['once'] for j in d['jobs']}['backfill']
     assert client.get('/api/overview').json()['lifecycle']['backfill']['order'] == ['a']
+
+
+def test_proposals_apply_reject_undo(client, monkeypatch):
+    from larkx import organize
+    from tests.test_organize import FakeFeishu
+    fs = FakeFeishu()
+    monkeypatch.setattr(web, '_lark', lambda: fs)
+    p = organize.OrganizeStore(Storage()).submit({'mute': ['大群'], 'pin': [{'chat': '项目群'}]})
+    assert client.get('/api/overview').json()['lifecycle']['proposal'] == {'id': p.id, 'pending': 2}
+    rows = client.get('/api/proposals').json()
+    assert [i['kind'] for i in rows[0]['items']] == ['pin', 'mute']
+    r = client.post(f'/api/proposals/{p.id}', json={'action': 'apply', 'items': [2]}, headers=H).json()
+    assert r['results'] == [{'seq': 2, 'result': '已执行'}] and fs.remind['12'] is False
+    client.post(f'/api/proposals/{p.id}', json={'action': 'reject', 'items': [1]}, headers=H)
+    assert [i['status'] for i in client.get('/api/proposals').json()[0]['items']] == ['rejected', 'applied']
+    client.post(f'/api/proposals/{p.id}', json={'action': 'undo'}, headers=H)
+    assert fs.remind['12'] is True and client.get('/api/overview').json()['lifecycle']['proposal'] is None
