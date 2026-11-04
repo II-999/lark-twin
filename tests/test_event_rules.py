@@ -216,7 +216,9 @@ def test_pause_after_due_snapshot_does_not_resurrect_task(monkeypatch):
     tid=r.history()[0]['task_id']
     d=Daemon.__new__(Daemon); d.storage=s; d.rule_store=r
     d.auth=SimpleNamespace(user_id='owner'); d.inbox=asyncio.Queue()
-    d.cfg={'memory_review_hour':-1}; d._load_state=lambda:{}
+    d.cfg={'memory_review_hour':-1}
+    from larkx.daemon.maintenance import Maintenance
+    d.maintenance=Maintenance(d)
     async def noop(): pass
     d._finish_takeovers=noop
     monkeypatch.setattr(r,'reconcile',lambda _:None)
@@ -251,7 +253,8 @@ def test_local_message_rule_pipeline(monkeypatch, fake_client):
     obj.cfg['memory_review_hour'] = -1
     obj.cfg['triggers'].update(prefix='/ai', owner_only=True)
     obj.prefix, obj.inbox, obj.home = '/ai', asyncio.Queue(), 'unused'
-    obj._load_state = lambda: {}
+    from larkx.daemon.maintenance import Maintenance
+    obj.maintenance = Maintenance(obj)
     obj._report = lambda *a: None
     async def noop(): pass
     obj._finish_takeovers = noop

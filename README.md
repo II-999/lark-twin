@@ -63,6 +63,10 @@ larkx takeover start <chat_id> --for 2h --goal "…"   # 让它替你聊一段
 larkx mentions --since 24h       # 最近谁找过你，有没有回
 larkx whitelist add 张三         # 让张三也能唤起数字人（list / remove 查看、移除）
 larkx audit                      # 它发过什么
+larkx jobs                       # 每日回顾等例行任务的上次结果和下次时间; jobs log 看运行记录
+larkx groups                     # 会话分类和关注度; groups assign <会话名> --to <分类名> 按名字调整
+larkx chats --attention 重点关注 # 按关注度、活跃时间筛会话(打开 LARKX_CHAT_GROUPS 后)
+larkx prune --dry-run            # 按保留天数清理旧消息, 先看会删多少
 larkx recall <msg_id>            # 撤回一条
 larkx service status | logs -f   # 运行状态
 ```
@@ -118,6 +122,8 @@ larkx rule delete 1
 | `LARKX_TRIGGER_PREFIX` | 触发前缀，默认是 `/ai` |
 | `LARKX_REPLY_SIGNATURE` | 每条回复末尾的署名，比如 `🤖 lark-twin · 数字分身`，会和正文空一行、前面加"——" |
 | `LARKX_DENY_REPLY` / `LARKX_DENY_REPLY_COOLDOWN` | 没权限的人发 `/ai` 时自动回的一句话（`{owner}` 换成你的名字，设成空关掉）· 同一会话同一人多少秒内只回一次，默认 600 |
+| `LARKX_CHAT_GROUPS` | 会话分类与关注度，默认关。打开后每天给会话画像，每日回顾只看重点和简单关注的会话 |
+| `LARKX_RETENTION_ARCHIVE_DAYS` / `LARKX_RETENTION_LIGHT_DAYS` | 只存不看、简单关注的会话消息保留天数，默认 0 一直保留 |
 | `LARKX_ALERT_CMD` | 飞书登录失效时的备用告警命令，比如用 lark-cli 机器人身份发给你 |
 | `LARKX_WEB_URL` | 网页控制台的对外地址（Nginx 入口），用来生成登录链接 |
 

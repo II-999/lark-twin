@@ -38,6 +38,7 @@ class FakeClient:
         self.forward_error = {}  # 转发这条源消息时抛的异常 {msg_id: 异常}
         self.reactions = []   # add_reaction 的调用: (消息 id, 表情 key)
         self.reaction_error = None  # add_reaction 抛的异常
+        self.api_responses = {}
 
     def send_msg(self, text, chat_id, root_id=None, keep_unread=False):
         self.sent.append((chat_id, text))
@@ -66,6 +67,9 @@ class FakeClient:
 
     def api(self, type_or_cmd, data=None):
         self.api_calls.append((type_or_cmd, data))
+        r = self.api_responses.get(type_or_cmd)   # 按请求类型预置的返回: dict 或 data -> dict
+        if r is not None:
+            return r(data) if callable(r) else r
         return {'message': 'ok'}
 
     def add_reaction(self, msg_id, reaction_type='OK'):

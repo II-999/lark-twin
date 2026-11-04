@@ -128,6 +128,27 @@ larkx mentions --since 24h        # 别人的私聊和 @你 的群消息；● �
 
 数字人的人设和行为准则在 `~/.larkx/agent/CLAUDE.md`，长期记忆在 `~/.larkx/agent/memory/`，这两处都可以直接查看和修改。
 
+## 会话分类与清理
+
+会话按分类管理，关注度三档：重点关注（全读、进记忆）、简单关注（只挑和本人有关的）、只存不看。要在 `.env` 里打开 `LARKX_CHAT_GROUPS`。
+
+```bash
+larkx groups                                         # 分类和会话数
+larkx groups add 项目A --attention 重点关注 --keywords 发布
+larkx groups assign <会话名或chat_id>... --to 项目A   # 归类; --attention 只存不看 单独设; --attention 跟分类 恢复
+larkx groups profile                                 # 马上刷新会话画像
+larkx chats --attention 重点关注 --active 7d          # 按关注度、活跃时间、--group 分类、--feishu-muted 免打扰筛
+larkx prune --dry-run                                # 按保留天数清理旧消息, 先看会删多少; --days N --chat 会话 单独清
+```
+
+## 例行任务
+
+```bash
+larkx jobs                       # 每日回顾、每周整理记忆的上次结果和下次时间
+larkx jobs log --job review      # 运行记录(失败原因在这里)
+larkx jobs run review            # 让 daemon 马上跑一次; --preview 只看提示词
+```
+
 ## 服务运维
 
 ```bash

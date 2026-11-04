@@ -127,6 +127,71 @@ class Control(Base):
 
 
 
+class ChatGroup(Base):
+    """会话分类: 关注度设在分类上(重点关注/简单关注/只存不看), 私人分类的内容不进工作记忆。"""
+    __tablename__ = 'chat_groups'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(64), unique=True, nullable=False)
+    attention = Column(String(8), default='light')
+    private = Column(Integer, default=0)
+    keywords = Column(Text, default='[]')          # 简单关注时这些词出现也算和本人有关
+    position = Column(Integer, default=0)
+    feishu_label_id = Column(String(32), default='')  # 对应的飞书标签
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ChatProfile(Base):
+    """会话画像: 信号、自动建议的分类和关注度、本人确认的分类。本人确认或手动设置过的, 画像不再改它的分类。"""
+    __tablename__ = 'chat_profiles'
+    chat_id = Column(String(32), primary_key=True)
+    name = Column(String(256), default='')
+    chat_type = Column(Integer, default=0)
+    group_id = Column(Integer, default=0, index=True)   # 0 = 未分类
+    attention = Column(String(8), default='')         # 覆盖分类的关注度; 空 = 跟分类
+    confirmed = Column(Integer, default=0)
+    suggested_group = Column(String(64), default='')
+    suggested_attention = Column(String(8), default='')
+    reason = Column(String(128), default='')
+    members = Column(Integer, default=0)
+    peer_id = Column(String(32), default='')
+    peer_bot = Column(Integer, default=-1)            # -1 未知 0 真人 1 机器人; 查到一次就记住
+    feishu_muted = Column(Integer, default=-1)        # 飞书免打扰: 只记录, 不参与降级
+    feishu_pinned = Column(Integer, default=0)
+    msgs = Column(Integer, default=0)                 # 统计窗口(30 天)内的消息数
+    owner_msgs = Column(Integer, default=0)
+    at_me = Column(Integer, default=0)
+    last_at = Column(BigInteger, default=0)
+    profiled_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class JobRun(Base):
+    """例行任务(每日回顾、简报、清理……)的每次运行: 先记下再执行, 状态和结果都看得见。"""
+    __tablename__ = 'job_runs'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job = Column(String(32), default='', index=True)
+    slot = Column(String(32), default='')          # 这次属于哪个时段: '2026-11-03' | 'once' | 'manual-<时间戳>'
+    attempt = Column(Integer, default=1)
+    trigger = Column(String(16), default='schedule')  # schedule | manual | startup
+    status = Column(String(16), default='queued', index=True)  # queued running ok failed skipped interrupted
+    ref = Column(String(64), default='')           # 轮次 ref job:<name>#<id>, 和 actions.turn_ref 对得上
+    created_at = Column(DateTime, default=datetime.now)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    summary = Column(Text, default='')
+    error = Column(Text, default='')
+    __table_args__ = (Index('ix_job_slot', 'job', 'slot'),)
+
+
+class JobState(Base):
+    """例行任务的断点和完成标记(回填进度、初始化记忆的批次)。"""
+    __tablename__ = 'job_state'
+    job = Column(String(32), primary_key=True)
+    data = Column(Text, default='{}')
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class WhitelistEntry(Base):
     """唤起白名单: 除本人外能叫起数字人的人。只按 user_id 匹配; 名字、部门、头像是添加时的快照, 只用来显示。"""
     __tablename__ = 'whitelist'

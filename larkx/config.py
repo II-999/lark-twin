@@ -47,6 +47,14 @@ DEFAULTS = {
     "memory_review_hour": 4,
     # 上下文用到自动压缩阈值的这个比例时, 先让数字人把要记的内容写进记忆(仅 claude 后端)
     "memory_flush_ratio": 0.85,
+    # 每周几(0=周一 … 6=周日)在每日回顾之后再整理一次记忆: 合并重复、删掉办完和过期的、旧内容归档; -1 关闭
+    "memory_consolidate_weekday": -1,
+    # 会话分类与关注度: 打开后每天回顾前给会话画像, 每日回顾按关注度只看重点和简单关注的会话; 默认关
+    "chat_groups": False,
+    # 只存不看的会话, 消息保留多少天(本人确认或画像建立满 7 天后才开始删); 0 = 一直保留(默认)
+    "retention_archive_days": 0,
+    # 简单关注的会话, 消息保留多少天; 0 = 一直保留(默认)。重点关注的会话一直保留
+    "retention_light_days": 0,
     # 数字人发出的消息末尾自动加上的签名, 如 "🤖 lark-twin · 数字分身"; 和正文隔一个空行, 前面加 "—— "。留空不加
     "reply_signature": "",
     # 数字人在别的会话以本人名义发消息时, 抄送一份到本人私聊
@@ -121,7 +129,7 @@ def load_config() -> dict:
         v = os.environ.get("LARKX_" + key.upper())
         if v:
             cfg[key] = v
-    for key in ("mark_read", "keep_unread", "allow_self", "mirror"):
+    for key in ("mark_read", "keep_unread", "allow_self", "mirror", "chat_groups"):
         if isinstance(cfg.get(key), str):
             cfg[key] = _as_bool(cfg[key])
     # LARKX_AGENT_CLI 是 claude_cli 的旧名
@@ -131,7 +139,8 @@ def load_config() -> dict:
     cfg["memory_review_hour"] = int(cfg["memory_review_hour"])
     cfg["memory_flush_ratio"] = float(cfg["memory_flush_ratio"])
     for key in ("send_rate_limit", "inbox_max_age", "catchup_interval", "takeover_default", "web_port",
-                "deny_reply_cooldown"):
+                "deny_reply_cooldown", "memory_consolidate_weekday",
+                "retention_archive_days", "retention_light_days"):
         cfg[key] = int(cfg[key])
     # LARKX_DENY_REPLY 写成空的是关掉这个功能, 不能像别的配置一样当成没写、退回默认值
     if os.environ.get("LARKX_DENY_REPLY") is not None:
