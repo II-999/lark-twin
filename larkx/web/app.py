@@ -137,6 +137,19 @@ def _hourly(st: Storage, hours: int = 24) -> list:
     return [{'hour': k.strftime('%H:00'), 'received': v[0], 'sent': v[1]} for k, v in buckets.items()]
 
 
+def _lifecycle(st, cfg) -> dict:
+    """总览上的例行任务和各关注度的会话数。"""
+    from .. import groups, jobs
+    store, now = jobs.JobStore(st), datetime.now()
+    att = {}
+    if cfg.get('chat_groups'):
+        for r in groups.ChatStore(st).view():
+            att[r['attention']] = att.get(r['attention'], 0) + 1
+    return {'jobs': [{'name': j.name, 'title': j.title, 'enabled': j.when(cfg) is not None,
+                      'next': jobs.next_time(j, cfg, now), 'last': jobs.describe(store.last(j.name))} for j in jobs.JOBS],
+            'chat_groups': bool(cfg.get('chat_groups')), 'attention': att}
+
+
 @api
 def overview(request: Request):
     cfg = load_config()
@@ -172,6 +185,7 @@ def overview(request: Request):
         'tasks_pending': len([t for t in st.list_tasks() if t.status == 'pending']),
         'takeovers': [{'chat_id': t.chat_id, 'until': t.until, 'goal': t.goal} for t in st.takeover_list() if t.until > time.time()],
         'memory_files': memory_files,
+        'lifecycle': _lifecycle(st, cfg),
         'hourly': _hourly(st),
     })
 
@@ -220,9 +234,102 @@ def conversations(request: Request):
 
 @api
 def chats(request: Request):
-    owner = _owner_chat()
-    return _json([{'chat_id': c.chat_id, 'name': c.name or (OWNER_CHAT_NAME if c.chat_id == owner else ''),
-                   'chat_type': c.chat_type, 'updated_at': c.updated_at} for c in Storage().list_chats(limit=100)])
+    """会话列表, 按最近活跃排序, 带分类、关注度和画像信号。"""
+    from .. import groups
+    st, owner = Storage(), _owner_chat()
+    order = [c.chat_id for c in st.list_chats(limit=int(request.query_params.get('limit', 500)))]
+    rows = groups.ChatStore(st).view(order)
+    for r in rows:
+        r['name'] = r['name'] or (OWNER_CHAT_NAME if r['chat_id'] == owner else '')
+    return _json(rows)
+
+
+def _group_rows(st) -> dict:
+    from .. import groups
+    cs = groups.ChatStore(st)
+    counts = {}
+    for r in cs.view():
+        counts[r['group_id']] = counts.get(r['group_id'], 0) + 1
+    return {'groups': [{'id': g.id, 'name': g.name, 'attention': g.attention, 'private': bool(g.private),
+                        'keywords': json.loads(g.keywords or '[]'), 'chats': counts.get(g.id, 0)} for g in cs.groups()],
+            'unassigned': counts.get(0, 0), 'attention_names': groups.ATTENTION,
+            'enabled': bool(load_config().get('chat_groups'))}
+
+
+@api
+def groups_api(request: Request):
+    """会话分类: GET 列表; POST 建分类 {name, attention, keywords, private}。改了立即生效。"""
+    from .. import groups
+    st = Storage()
+    if request.method == 'POST':
+        b = request.state.body
+        g = groups.ChatStore(st).create_group(str(b.get('name') or ''), groups.parse_attention(b.get('attention') or 'light'),
+                                              b.get('keywords') or [], bool(b.get('private')))
+        st.log_action(actor='human', action='group', content=f'网页建分类 {g.name}')
+    return _json(_group_rows(st))
+
+
+@api
+def group_item(request: Request):
+    """PUT 改分类(name/attention/keywords/private); DELETE 删分类(分类里的会话变成未分类)。"""
+    from .. import groups
+    st, gid = Storage(), request.path_params['group_id']
+    cs = groups.ChatStore(st)
+    if request.method == 'DELETE':
+        cs.delete_group(gid)
+        st.log_action(actor='human', action='group', content=f'网页删分类 #{gid}')
+    else:
+        b = request.state.body
+        fields = {k: b[k] for k in ('name', 'keywords') if k in b}
+        if 'attention' in b:
+            fields['attention'] = groups.parse_attention(b['attention'])
+        if 'private' in b:
+            fields['private'] = 1 if b['private'] else 0
+        cs.update_group(gid, **fields)
+        st.log_action(actor='human', action='group', content=f'网页改分类 #{gid}: {fields}')
+    return _json(_group_rows(st))
+
+
+@api
+def chat_group(request: Request):
+    """PUT {group_id: 分类 id 或 0, attention: 关注度 或 '' 跟分类}: 本人指定会话的分类和关注度, 立即生效。"""
+    from .. import groups
+    st, cid, b = Storage(), request.path_params['chat_id'], request.state.body
+    cs = groups.ChatStore(st)
+    gid = None
+    if 'group_id' in b:
+        gid = int(b['group_id'] or 0)
+        if gid and not cs.group(gid):
+            raise ValueError('没有这个分类')
+    att = None
+    if 'attention' in b:
+        att = '' if not b['attention'] else groups.parse_attention(b['attention'])
+    cs.assign([cid], group_id=gid, attention=att, by='web')
+    st.log_action(actor='human', action='group', chat_id=cid, content=f'网页归类 group={gid} attention={att}')
+    return _json(cs.view([cid])[0])
+
+
+@api
+def jobs_api(request: Request):
+    """例行任务: 每个任务的开关、上次结果、下次时间, 以及最近的运行记录。"""
+    from .. import jobs
+    st, cfg, now = Storage(), load_config(), datetime.now()
+    store = jobs.JobStore(st)
+    rows = []
+    for job in jobs.JOBS:
+        nxt = jobs.next_time(job, cfg, now)
+        rows.append({'name': job.name, 'title': job.title, 'kind': job.kind,
+                     'enabled': job.when(cfg) is not None, 'next': nxt, 'last': jobs.describe(store.last(job.name))})
+    return _json({'jobs': rows, 'runs': [jobs.describe(r) for r in store.log(limit=int(request.query_params.get('limit', 30)))]})
+
+
+@api
+def job_run(request: Request):
+    from .. import jobs
+    name = request.path_params['name']
+    if not jobs.get(name):
+        raise ValueError('没有这个例行任务')
+    return control_wait(f'job:{name}')
 
 
 @api
@@ -498,6 +605,11 @@ def control(request: Request):
     action = request.state.body.get('action')
     if action not in ('interrupt', 'clear'):
         raise ValueError('不支持的操作')
+    return control_wait(action)
+
+
+def control_wait(action: str):
+    """交给 daemon 的控制请求, 最多等 15 秒拿结果。"""
     st = Storage()
     cid = st.control_add(action)
     deadline = time.time() + 15
@@ -579,6 +691,10 @@ def create_app() -> Starlette:
         Route('/', index), Route('/console', old_console), Route('/login', login, methods=['POST']),
         Route('/api/overview', overview), Route('/api/activity', activity), Route('/api/conversations', conversations),
         Route('/api/chats', chats), Route('/api/mentions', mentions),
+        Route('/api/chats/{chat_id}/group', chat_group, methods=['PUT']),
+        Route('/api/groups', groups_api, methods=['GET', 'POST']),
+        Route('/api/groups/{group_id:int}', group_item, methods=['PUT', 'DELETE']),
+        Route('/api/jobs', jobs_api), Route('/api/jobs/{name}/run', job_run, methods=['POST']),
         Route('/api/tasks', tasks, methods=['GET', 'POST']), Route('/api/tasks/{task_id:int}', task_item, methods=['GET', 'DELETE']),
         Route('/api/say', say, methods=['POST']),
         Route('/api/takeovers', takeovers, methods=['GET', 'POST']),
