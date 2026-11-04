@@ -19,7 +19,7 @@ from ..storage import ACK_REACTION, Storage
 from ..event_rules import RuleStore
 from .listener import Listener
 from .maintenance import Maintenance
-from .prompts import FLUSH_PROMPT, TAKEOVER_SUMMARY
+from .prompts import TAKEOVER_SUMMARY, flush_prompt
 from .triggers import (build_prompt, build_report_prompt, build_say_prompt, build_system_prompt, build_task_prompt,
                        denied_attempt, parse_command, parse_takeover, should_handle, strip_mentions, strip_prefix,
                        takeover_note)
@@ -668,7 +668,7 @@ class Daemon:
         if pressure is None or pressure < self.cfg['memory_flush_ratio']:
             return
         logger.info(f'[agent] 上下文已用到压缩阈值的 {pressure:.0%}, 先整理记忆再压缩')
-        ev = Event('system', build_system_prompt(FLUSH_PROMPT), ref='memory-flush')
+        ev = Event('system', build_system_prompt(flush_prompt(self.cfg)), ref='memory-flush')
         try:
             await self._run_turn(ev, ev.prompt)
             await asyncio.to_thread(commit_agent_home, self.home, 'system memory-flush')

@@ -78,7 +78,15 @@ def ensure_agent_home(cfg: dict) -> Path:
 
 
 def commit_agent_home(home: Path, message: str) -> bool:
-    """把人设、记忆等变化提交进数字人目录自己的 git 仓库; 没有变化时返回 False。"""
+    """把人设、记忆等变化提交进数字人目录自己的 git 仓库; 没有变化时返回 False。
+    打开结构化记忆(LARKX_MEMORY_STRUCTURED)时, 提交前按记忆文件的字段重建 memory/MEMORY.md。"""
+    try:
+        from ..config import load_config
+        if load_config().get('memory_structured'):
+            from ..memory import build_index
+            build_index(home)
+    except Exception as e:
+        logger.warning(f'重建记忆索引失败: {e!r}')
     try:
         _git(home, 'add', '-A')
         if _git(home, 'diff', '--cached', '--quiet', check=False).returncode == 0:

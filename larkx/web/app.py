@@ -29,7 +29,7 @@ from ..storage.models import Action, InboxItem, Message
 STATIC = Path(__file__).parent / 'static'
 TOKEN_PATH = DATA_DIR / 'web_token'
 COOKIE = 'larkx_token'
-MEMORY_NAME = re.compile(r'^[\w\-.一-鿿]+\.md$')
+MEMORY_NAME = re.compile(r'^(archive/)?[\w\-.一-鿿]+\.md$')
 _login_cache = {'at': 0, 'value': None}
 
 
@@ -145,9 +145,10 @@ def _lifecycle(st, cfg) -> dict:
     if cfg.get('chat_groups'):
         for r in groups.ChatStore(st).view():
             att[r['attention']] = att.get(r['attention'], 0) + 1
-    return {'jobs': [{'name': j.name, 'title': j.title, 'enabled': j.when(cfg) is not None,
+    return {'jobs': [{'name': j.name, 'title': j.title, 'once': j.once, 'enabled': j.when(cfg) is not None,
                       'next': jobs.next_time(j, cfg, now), 'last': jobs.describe(store.last(j.name))} for j in jobs.JOBS],
-            'chat_groups': bool(cfg.get('chat_groups')), 'attention': att}
+            'chat_groups': bool(cfg.get('chat_groups')), 'attention': att,
+            'backfill': store.get_state('backfill'), 'bootstrap': store.get_state('bootstrap')}
 
 
 @api
@@ -325,9 +326,10 @@ def jobs_api(request: Request):
     rows = []
     for job in jobs.JOBS:
         nxt = jobs.next_time(job, cfg, now)
-        rows.append({'name': job.name, 'title': job.title, 'kind': job.kind,
+        rows.append({'name': job.name, 'title': job.title, 'kind': job.kind, 'once': job.once,
                      'enabled': job.when(cfg) is not None, 'next': nxt, 'last': jobs.describe(store.last(job.name))})
-    return _json({'jobs': rows, 'runs': [jobs.describe(r) for r in store.log(limit=int(request.query_params.get('limit', 30)))]})
+    return _json({'jobs': rows, 'runs': [jobs.describe(r) for r in store.log(limit=int(request.query_params.get('limit', 30)))],
+                  'backfill': store.get_state('backfill'), 'bootstrap': store.get_state('bootstrap')})
 
 
 @api
@@ -535,19 +537,43 @@ def _git(home: Path, *args) -> str:
 
 @api
 def memory(request: Request):
-    home = _agent_home()
-    files = [{'name': p.name, 'content': p.read_text(encoding='utf-8'), 'mtime': datetime.fromtimestamp(p.stat().st_mtime)}
-             for p in sorted((home / 'memory').glob('*.md'), key=lambda p: (p.name != 'MEMORY.md', p.name))]
+    """记忆文件(含 archive/ 里的归档)和开头的字段。打开结构化记忆时 MEMORY.md 由代码生成, 只读。"""
+    from .. import memory as mem
+    home, structured = _agent_home(), bool(load_config().get('memory_structured'))
+    base = home / 'memory'
+    paths = sorted(base.glob('*.md'), key=lambda p: (p.name != 'MEMORY.md', p.name)) + sorted((base / 'archive').glob('*.md'))
+    files = []
+    for p in paths:
+        text, name = p.read_text(encoding='utf-8'), p.relative_to(base).as_posix()
+        files.append({'name': name, 'content': text, 'mtime': datetime.fromtimestamp(p.stat().st_mtime),
+                      'meta': mem.parse(text)[0], 'archived': name.startswith('archive/'),
+                      'generated': structured and name == mem.INDEX, 'structured': structured})
     return _json(files)
 
 
 @api
+def memory_issues(request: Request):
+    """结构化记忆的检查结果; 没打开时为空。"""
+    from .. import memory as mem
+    home = _agent_home()
+    if not load_config().get('memory_structured') or not (home / 'memory').is_dir():
+        return _json([])
+    return _json([{'level': l, 'file': f, 'message': m} for l, f, m in mem.lint(home)])
+
+
+@api
 def memory_item(request: Request):
+    from ..memory import INDEX
     name = request.path_params['name']
-    if not MEMORY_NAME.match(name):
+    if not MEMORY_NAME.match(name) or '..' in name:
         raise ValueError('文件名不合法')
+    if name == INDEX and load_config().get('memory_structured'):
+        raise ValueError('MEMORY.md 由程序按各文件的字段生成, 改记忆请改对应文件')
     home = _agent_home()
     path = home / 'memory' / name
+    if not path.resolve().is_relative_to((home / 'memory').resolve()):
+        raise ValueError('文件名不合法')
+    path.parent.mkdir(parents=True, exist_ok=True)
     if request.method == 'DELETE':
         path.unlink(missing_ok=True)
         commit_agent_home(home, f'网页删除 memory/{name}')
@@ -710,7 +736,8 @@ def create_app() -> Starlette:
         Route('/api/whitelist/{user_id}', whitelist_item, methods=['DELETE']),
         Route('/api/people', people),
         Route('/api/settings', settings, methods=['GET', 'PUT']),
-        Route('/api/memory', memory), Route('/api/memory/{name}', memory_item, methods=['PUT', 'DELETE']),
+        Route('/api/memory', memory), Route('/api/memory-issues', memory_issues),
+        Route('/api/memory/{name:path}', memory_item, methods=['PUT', 'DELETE']),
         Route('/api/persona', persona, methods=['GET', 'PUT']),
         Route('/api/history', history), Route('/api/history/{sha}', history_item),
         Route('/api/logs', logs), Route('/api/control', control, methods=['POST']),

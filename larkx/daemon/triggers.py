@@ -253,6 +253,6 @@ def build_system_prompt(text: str) -> str:
 
 
 def build_report_prompt(kind: str, text: str, owner_chat: str) -> str:
-    """给本人的汇报(如接管结束的总结): 只能发到本人私聊, 用 markdown 发一条。"""
+    """给本人的汇报(每日简报、接管总结): 只能发到本人私聊, 用 markdown 发一条。"""
     return (f'<report kind={quoteattr(kind)}>{escape(text)}</report>\n\n'
             f"写好后用 larkx send {owner_chat} -m - <<'EOF' ... EOF 发给本人(只能发到这个会话)。")

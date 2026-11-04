@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 from sqlalchemy import create_engine, desc, func, or_
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm.attributes import flag_modified
 from ..config import inside_twin, load_config
 from .models import (Action, AgentSession, Base, CatchupMark, Chat, Control, InboxItem, Message, Setting, Takeover, Task,
                      WhitelistEntry)
@@ -37,7 +38,8 @@ class Storage:
         # 方法返回的对象在会话关闭后还要读属性, 提交时不让它们过期
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-    def save_message(self, msg: dict, sender_name='', chat_name='', direction='in') -> bool:
+    def save_message(self, msg: dict, sender_name='', chat_name='', direction='in', at_msg_time=False) -> bool:
+        """at_msg_time: 回填历史时用, 会话的更新时间取消息时间(不早于原值), 不把回填的旧会话都顶到最前面。"""
         s = self.Session()
         try:
             from ..event_rules import mention_ids
@@ -57,7 +59,7 @@ class Storage:
             else:
                 row = Message(**fields)
                 s.add(row)
-            self._touch_chat(s, row)
+            self._touch_chat(s, row, at_msg_time)
             s.commit()
             return True
         except Exception:
@@ -66,10 +68,12 @@ class Storage:
         finally:
             s.close()
 
-    def _touch_chat(self, s, row: Message):
+    def _touch_chat(self, s, row: Message, at_msg_time=False):
         chat = s.query(Chat).filter_by(chat_id=row.chat_id).first()
+        msg_time = datetime.fromtimestamp(row.create_time) if at_msg_time and row.create_time else None
         if not chat:
-            chat = Chat(chat_id=row.chat_id, chat_type=row.chat_type)
+            # 回填时新会话的时间直接取消息时间: 后面的查询会先把这行写进库, 默认值(当前时间)就改不回来了
+            chat = Chat(chat_id=row.chat_id, chat_type=row.chat_type, **({'updated_at': msg_time} if msg_time else {}))
             s.add(chat)
         if row.chat_name and (not chat.name):
             chat.name = row.chat_name
@@ -78,7 +82,11 @@ class Storage:
             s.add(CatchupMark(chat_id=row.chat_id, position=chat.last_position or row.position))
         if row.position and row.position > (chat.last_position or 0):
             chat.last_position = row.position
-        chat.updated_at = datetime.now()
+        if msg_time:
+            chat.updated_at = max(chat.updated_at, msg_time) if chat.updated_at else msg_time
+            flag_modified(chat, 'updated_at')  # 值没变也要显式写上, 否则改了别的列时 onupdate 会填成当前时间
+        else:
+            chat.updated_at = datetime.now()
 
     def update_chat_name(self, chat_id: str, name: str, chat_type: int=0):
         s = self.Session()

@@ -158,8 +158,8 @@ def check_jobs(cfg, storage=None):
         ran += 1
         if last.status in ('failed', 'interrupted'):
             bad.append(f'{job.title}({jobs.STATUS_NAMES[last.status]})')
-        if job.when(cfg)[2] is not None:
-            continue  # 每周任务不按 36 小时判
+        if job.once or job.when(cfg)[2] is not None:
+            continue  # 一次性任务和每周任务不按 36 小时判
         recent = datetime.now() - timedelta(hours=36)
         first = store.log(job.name, limit=1000)[-1]
         done = store.last(job.name, status=('ok', 'skipped'))
@@ -172,6 +172,55 @@ def check_jobs(cfg, storage=None):
     return _check('例行任务', OK, f'{ran} 个任务有运行记录, 都正常' if ran else '还没跑过, 到点会自动运行(larkx jobs 查看计划)')
 
 
+def check_backfill(cfg, storage=None):
+    """首次回填和初始化记忆的进度。"""
+    from . import jobs
+    from .storage import Storage
+    if int(cfg.get('backfill_days') or 0) <= 0:
+        return _check('历史回填', OK, '已关闭(LARKX_BACKFILL_DAYS=0)')
+    store = jobs.JobStore(storage or Storage())
+    bf, bs = store.get_state('backfill'), store.get_state('bootstrap')
+    if not bf:
+        return _check('历史回填', WARN, f'还没做: daemon 启动后会自动回填最近 {cfg["backfill_days"]} 天', 'larkx service status 确认服务在运行')
+    progress = f"{bf.get('chats_done', 0)}/{len(bf.get('order') or [])} 个会话, {bf.get('messages', 0)} 条"
+    if not bf.get('done'):
+        return _check('历史回填', OK, f'进行中: {progress}')
+    memo = '记忆已初始化' if bs.get('done') else (
+        f"初始化记忆中: {bs.get('next', 0)}/{-(-len(bs.get('chats') or []) // 8) or '?'} 批" if bs else '等待初始化记忆')
+    return _check('历史回填', OK, f'已完成: {progress}; {memo}')
+
+
+def check_briefing(cfg):
+    """每日简报: 时间格式对不对, 找不找得到本人私聊。"""
+    from . import jobs, notify
+    try:
+        t = jobs.briefing_time(cfg)
+    except ValueError as e:
+        return _check('每日简报', FAIL, str(e), '改 .env 里的 LARKX_BRIEFING_AT, 如 09:00; 关掉写 off')
+    if not t:
+        return _check('每日简报', OK, '已关闭')
+    if not (cfg.get('notify_chat') or notify._load().get('owner_chat')):
+        return _check('每日简报', WARN, f'每天 {t[0]:02d}:{t[1]:02d} 发, 但还没找到本人私聊',
+                      'daemon 第一次发通知时会自动找到; 也可以设 LARKX_NOTIFY_CHAT')
+    return _check('每日简报', OK, f'每天 {t[0]:02d}:{t[1]:02d} 发到本人私聊, 周一附上周回顾')
+
+
+def check_memory(cfg):
+    """结构化记忆: 文件数、待跟进、字段问题; 没打开时不检查。"""
+    from pathlib import Path
+    from . import memory
+    home = Path(cfg['agent_home'])
+    if not cfg.get('memory_structured'):
+        return None
+    if not (home / 'memory').is_dir():
+        return _check('长期记忆', OK, '还没有(daemon 第一次启动时创建)')
+    s = memory.stats(home)
+    detail = f"{s['files']} 个文件, 归档 {s['archived']} 个, 待跟进 {s['todo']} 件"
+    if s['errors']:
+        return _check('长期记忆', WARN, f"{detail}; {s['errors']} 个字段错误", 'larkx memory lint 查看; 每日回顾时分身会自己改')
+    return _check('长期记忆', OK, detail + (f"; {s['warnings']} 个提醒(larkx memory lint)" if s['warnings'] else ''))
+
+
 def run(skip_model=False) -> list:
     cfg = load_config()
     checks = [check_login(), *check_config(cfg), check_agent_cli(cfg)]
@@ -181,4 +230,9 @@ def run(skip_model=False) -> list:
     checks.append(check_alert_channel(cfg))
     checks.append(check_user_skills())
     checks.append(check_jobs(cfg))
+    checks.append(check_backfill(cfg))
+    checks.append(check_briefing(cfg))
+    mem = check_memory(cfg)
+    if mem:
+        checks.append(mem)
     return checks
