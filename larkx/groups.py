@@ -57,7 +57,7 @@ def suggest(p: ChatProfile, owner_id: str, action_words=()):
     name = p.name or ''
     if p.chat_type == 1:
         if p.peer_id and str(p.peer_id) == str(owner_id):
-            return '本人', 'archive', '自己的私聊: 指令和通知通道'
+            return '本人', 'archive', '自己的私聊: 指令和通知通道, 只存不看但不清理'
         if p.peer_bot == 1:
             if _has(name, BOT_ACTION + tuple(action_words)):
                 return '需要你处理的通知', 'light', '通知类机器人: 只挑需要你处理的'
@@ -230,6 +230,8 @@ class ChatStore:
                 'keywords': json.loads(g.keywords or '[]') if g else [],
                 'attention': att, 'attention_name': ATTENTION[att], 'attention_source': source,
                 'confirmed': bool(p and p.confirmed),
+                # 本人自己的私聊: 指令和汇报的通道, 清理时不管关注度都不删
+                'kept': bool(p and p.chat_type == 1 and p.suggested_group == '本人'),
                 'suggested_group': p.suggested_group if p else '', 'suggested_attention': p.suggested_attention if p else '',
                 'reason': p.reason if p else '', 'members': p.members if p else 0,
                 'feishu_muted': (p.feishu_muted == 1) if p else False, 'feishu_pinned': bool(p and p.feishu_pinned),

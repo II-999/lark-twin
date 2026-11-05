@@ -624,8 +624,9 @@ class Daemon:
             return  # paused/cancelled/duplicate queue item
         note, result = ev.note, None
         self._owner_stopped = False
-        # 事件任务和给本人的汇报崩溃后不当轮重跑: 汇报可能已经发出去了, 由 maintenance 查过再决定要不要兜底
-        for attempt in ((1,) if is_event or ev.kind == 'report' else (1, 2)):
+        # 事件任务和例行任务里给本人的汇报(简报)崩溃后不当轮重跑: 汇报可能已经发出去了, 由 maintenance 查过再决定要不要兜底。
+        # 接管结束的总结没有运行记录和兜底, 照常重试一次
+        for attempt in ((1,) if is_event or (ev.run_id and ev.kind == 'report') else (1, 2)):
             prompt = ev.prompt
             if ev.kind == 'message':
                 prompt = build_prompt(ev.msg, ev.body, ev.chat_name, ev.sender_name, is_owner=ev.is_owner, note=note)

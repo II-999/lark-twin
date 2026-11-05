@@ -244,3 +244,18 @@ def test_clear_during_job_is_owner_stop(tmp_path, monkeypatch, fake_client):
     obj.session.reset = reset
     asyncio.run(obj.control('clear'))
     assert obj._owner_stopped
+
+
+@pytest.mark.parametrize('owner', [True, False])
+def test_feishu_clear_owner_only_marks_stop(tmp_path, monkeypatch, fake_client, owner):
+    """飞书里本人发 /ai /clear 打断例行任务算本人打断; 别人发的不算(也清不了会话)。"""
+    from tests.test_ack_reaction import daemon as make, msg, receive
+    obj = make(tmp_path, monkeypatch, fake_client, 'all')
+    obj._turns_since_flush = 0
+    obj.session.busy = True
+    obj._owner_stopped = False
+    m = msg('/ai /clear', chat_id='p9')
+    if not owner:
+        m['from_id'] = '200'
+    asyncio.run(receive(obj, m))
+    assert obj._owner_stopped is owner

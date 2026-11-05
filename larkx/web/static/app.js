@@ -677,7 +677,8 @@ async function viewChats() {
           await api(`/api/chats/${encodeURIComponent(r.chat_id)}/group`, { method: 'PUT', body: { attention: v } }); load(); }, '已调整'));
         return h('tr', {},
           h('td', {}, h('b', {}, r.name || '(未命名)'), ' ', r.chat_type === 1 ? h('span', { class: 'tag' }, r.peer_bot ? '机器人' : '私聊') : null,
-            r.feishu_pinned ? h('span', { class: 'tag' }, '置顶') : null, r.feishu_muted ? h('span', { class: 'tag' }, '免打扰') : null, r.private ? h('span', { class: 'tag' }, '私人') : null),
+            r.feishu_pinned ? h('span', { class: 'tag' }, '置顶') : null, r.feishu_muted ? h('span', { class: 'tag' }, '免打扰') : null, r.private ? h('span', { class: 'tag' }, '私人') : null,
+            r.kept ? h('span', { class: 'tag', title: '本人自己的私聊是指令和汇报的通道，不管关注度都不清理' }, '不清理') : null),
           h('td', {}, g),
           h('td', {}, a),
           h('td', { class: 'muted' }, `${r.msgs} 条 · 你 ${r.owner_msgs} · @你 ${r.at_me}`),

@@ -194,10 +194,15 @@ class Maintenance:
         self._failed(run, err)
 
     def turn_error(self, ev, err: str):
-        """这一轮抛了会话中断以外的异常。"""
+        """这一轮抛了会话中断以外的异常。汇报已经发到本人私聊的, 算完成, 不再告警。"""
         run = self.store.get(ev.run_id)
-        if run and run.status in jobs.ACTIVE:
-            self._failed(run, err)
+        if not run or run.status not in jobs.ACTIVE:
+            return
+        job = jobs.get(run.job)
+        if job and job.kind == 'report' and self.reported(run.job, run.slot):
+            self.store.finish(run.id, f'已发出(发出后这一轮报错: {err[:100]})')
+            return
+        self._failed(run, err)
 
     def _briefing_done(self, ev, run, result):
         """简报这一轮结束: 查审计里有没有真的发到本人私聊; 没发出就由代码直接发数据版兜底。"""

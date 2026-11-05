@@ -194,3 +194,26 @@ def test_report_turn_not_retried_after_crash(tmp_path, monkeypatch, fake_client)
     monkeypatch.setattr(obj, '_run_turn', crash)
     asyncio.run(obj._handle(ev))
     assert calls == [1]                                                              # 不当轮重跑
+
+
+def test_turn_error_after_sent_is_not_alerted(tmp_path, monkeypatch, fake_client):
+    obj = _daemon(tmp_path, monkeypatch, fake_client)
+    run = obj.maintenance.store.create('briefing', 'z')
+    obj.maintenance.store.start(run.id)
+    obj.storage.log_action(actor='agent', action='send', chat_id='self', content='简报', turn_ref=run.ref)
+    obj.maintenance.turn_error(type('E', (), {'run_id': run.id, 'chat_id': 'self'})(), 'ValueError()')
+    assert obj.maintenance.store.get(run.id).status == 'ok' and not [t for c, t in fake_client.sent if '失败' in t]
+
+
+def test_takeover_summary_still_retried_after_crash(tmp_path, monkeypatch, fake_client):
+    from larkx.agent import SessionCrashed
+    from larkx.daemon import Event
+    obj = _daemon(tmp_path, monkeypatch, fake_client)
+    calls = []
+
+    async def crash(*a, **k):
+        calls.append(1)
+        raise SessionCrashed('boom')
+    monkeypatch.setattr(obj, '_run_turn', crash)
+    asyncio.run(obj._handle(Event('report', '<report kind="takeover">x</report>', chat_id='self', ref='takeover-summary')))
+    assert calls == [1, 1]                                                           # 没有运行记录的汇报照常重试
