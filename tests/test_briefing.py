@@ -122,7 +122,8 @@ def test_briefing_fallback_when_not_sent(tmp_path, monkeypatch, fake_client):
     run = obj.maintenance.store.create('briefing', 'x')
     ev = type('E', (), {'run_id': run.id, 'chat_id': 'self'})()
     obj.maintenance.on_turn_done(ev, TurnResult('success', False, '写好了', 1.0))   # 说写好了, 审计里却没有发送
-    assert obj.maintenance.store.get(run.id).status == 'failed'
+    r = obj.maintenance.store.get(run.id)
+    assert r.status == 'ok' and '已发数据版兜底' in r.summary                         # 本人收到了数据版, 不再重跑
     assert any('工作简报' in t and '数据版' in t for c, t in fake_client.sent if c == 'self')
     run2 = obj.maintenance.store.create('briefing', 'y')
     obj.storage.log_action(actor='agent', action='send', chat_id='self', content='简报', turn_ref=run2.ref)
@@ -162,3 +163,34 @@ def test_briefing_sent_then_error_is_not_resent(tmp_path, monkeypatch, fake_clie
         n = len(fake_client.sent)
         obj.maintenance.on_turn_done(type('E', (), {'run_id': run.id, 'chat_id': 'self'})(), result)
         assert obj.maintenance.store.get(run.id).status == 'ok' and len(fake_client.sent) == n
+
+
+def test_briefing_not_rerun_after_sent(tmp_path, monkeypatch, fake_client):
+    """之前某次(出错、重启前)已经发到本人私聊: 再到期时直接记完成, 不再交给数字人。"""
+    obj = _daemon(tmp_path, monkeypatch, fake_client)
+    if datetime.now().hour >= 3:
+        obj.cfg['briefing_at'] = (datetime.now() - timedelta(hours=1)).strftime('%H:%M')
+    m = obj.maintenance
+    asyncio.run(m.tick())
+    ev = obj.inbox.get_nowait()
+    obj.storage.log_action(actor='agent', action='send', chat_id='self', content='简报', turn_ref=ev.ref)
+    m.store._set(ev.run_id, status='interrupted', finished_at=datetime.now() - timedelta(hours=2))   # 发完被重启打断
+    asyncio.run(m.tick())
+    assert obj.inbox.qsize() == 0 and m.store.last('briefing').summary == '这一时段已经发过, 不再重发'
+
+
+def test_report_turn_not_retried_after_crash(tmp_path, monkeypatch, fake_client):
+    from larkx.agent import SessionCrashed
+    obj = _daemon(tmp_path, monkeypatch, fake_client)
+    if datetime.now().hour >= 3:
+        obj.cfg['briefing_at'] = (datetime.now() - timedelta(hours=1)).strftime('%H:%M')
+    asyncio.run(obj.maintenance.tick())
+    ev = obj.inbox.get_nowait()
+    calls = []
+
+    async def crash(*a, **k):
+        calls.append(1)
+        raise SessionCrashed('boom')
+    monkeypatch.setattr(obj, '_run_turn', crash)
+    asyncio.run(obj._handle(ev))
+    assert calls == [1]                                                              # 不当轮重跑

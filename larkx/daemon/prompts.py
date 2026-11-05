@@ -31,6 +31,7 @@ BOOTSTRAP_PROMPT = ('初始化记忆(第 {i}/{n} 批)。刚从飞书回填了本
                     '只记和工作有关、稳定有用的事实: 不记别人的私事, 不抄聊天原文, 用自己的话概括; '
                     '记忆会存进数字人目录、别人唤起数字人时也可能读到。已有同主题的文件就合并更新, 不要重复新建。{last}')
 BOOTSTRAP_LAST = '这是最后一批: 最后通读一遍 memory/, 把重复的合并。'
+BOOTSTRAP_FINAL = '初始化记忆收尾: 各批会话已经整理过了(有的批次没成功, 跳过了)。通读一遍 memory/, 把主题重复的文件合并。'
 BRIEFING_PROMPT = ('写今天的工作简报, 发到本人私聊。下面是代码算好的数据(都是事实, 别编造):\n\n{data}\n\n'
                    '要求: markdown, 一条消息, 25 行以内, 先写结论。顺序: ① 今天要你处理的(找你还没回的、你标记的、'
                    '到期的提醒和待跟进的事); ② {chats}进展, 每个一两句, 需要时用 larkx messages <chat_id> --since {since} 看; '
@@ -106,6 +107,8 @@ def bootstrap(cfg: dict, storage, now, owner_id: str = '', **kw) -> str:
     st = jobs.JobStore(storage).get_state('bootstrap')
     ids = st.get('chats') or bootstrap_chats(storage, cfg, owner_id)
     n = max(1, -(-len(ids) // BOOTSTRAP_BATCH))
+    if st.get('next', 0) >= n:  # 收尾: 最后一批被跳过时补做"通读合并"
+        return _with_format(cfg, BOOTSTRAP_FINAL) + MAINTENANCE_TAIL
     i = min(st.get('next', 0), n - 1)
     batch = ids[i * BOOTSTRAP_BATCH:(i + 1) * BOOTSTRAP_BATCH]
     days = int(cfg.get('backfill_days') or 30)

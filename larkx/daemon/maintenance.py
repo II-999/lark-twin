@@ -73,7 +73,18 @@ class Maintenance:
             if due[0] == 'skip':
                 self.store.create(job.name, due[1], status='skipped', summary='错过计划时间, 这一次不跑')
                 continue
+            if job.kind == 'report' and self.reported(job.name, due[1]):
+                # 之前某次(出错、中断、重启前)其实已经发到本人私聊: 直接记完成, 不再发一遍
+                self.store.create(job.name, due[1], status='ok', summary='这一时段已经发过, 不再重发')
+                continue
             await self.start(job, due[1], 'schedule', due[2])
+
+    def reported(self, job: str, slot_key: str) -> bool:
+        """这个时段之前的运行里, 有没有哪一次已经成功发到本人私聊。"""
+        refs = [r.ref for r in self.store.runs(job, slot_key) if r.ref]
+        owner = self.d.notifier.owner_chat()
+        return bool(refs and owner) and any(a.action == 'send' and a.ok and a.chat_id == owner
+                                            for a in self.d.storage.actions_for_turns(refs))
 
     async def start(self, job: jobs.Job, slot_key: str, trigger: str, attempt: int = 1):
         run = self.store.create(job.name, slot_key, trigger, attempt)
@@ -126,6 +137,11 @@ class Maintenance:
                 bs['next'] += 1
                 self.store.put_state('bootstrap', bs)
             if bs['next'] * BOOTSTRAP_BATCH >= len(bs['chats']):
+                last = -(-len(bs['chats']) // BOOTSTRAP_BATCH)
+                # 最后一批被跳过了, 它带的"通读合并"那一步没做: 单独补一轮收尾
+                if last in bs.get('skipped', []) and len(bs['skipped']) < last and not bs.get('final') \
+                        and not self._batch_gave_up('final'):
+                    return 'final'
                 bs['done'] = True
                 self.store.put_state('bootstrap', bs)
                 return None
@@ -169,6 +185,10 @@ class Maintenance:
                 bs = self.store.get_state('bootstrap')
                 bs['next'] = max(bs.get('next', 0), int(run.slot[6:]))
                 self.store.put_state('bootstrap', bs)
+            elif run.job == 'bootstrap' and run.slot == 'final':
+                bs = self.store.get_state('bootstrap')
+                bs['final'] = True
+                self.store.put_state('bootstrap', bs)
             return
         err = ('agent 会话中断, 结果未知' if result is None else f'{result.subtype}: {result.text or ""}')
         self._failed(run, err)
@@ -193,8 +213,9 @@ class Maintenance:
         ok = self.d.notifier.send(digest.render(data) + '\n\n(分身这次没写成简报, 以上是数据版)')
         why = '数字人没有发出简报' if result is not None and not result.is_error else \
             ('agent 会话中断' if result is None else f'{result.subtype}: {result.text or ""}')
-        self.store.fail(run.id, why + ('; 已发数据版兜底' if ok else '; 兜底也没发出去'))
-        if not ok:
+        if ok:  # 本人已经收到数据版: 这一时段算完成, 不再重跑, 免得再收到一份
+            self.store.finish(run.id, f'{why}; 已发数据版兜底')
+        else:
             self._failed(run, why + '; 兜底也没发出去')
 
     async def _run_local(self, job: jobs.Job, run):
@@ -208,6 +229,10 @@ class Maintenance:
         except Paused as e:
             self.store._set(run.id, status=jobs.PAUSED, finished_at=datetime.now(), summary=str(e))
             logger.info(f'例行任务「{job.title}」暂停: {e}')
+        except asyncio.CancelledError:
+            # 停服务(SIGTERM)时任务被取消, 不经过上面的 Paused: 同样记为暂停, 下次启动接着跑
+            self.store._set(run.id, status=jobs.PAUSED, finished_at=datetime.now(), summary='停服务时暂停')
+            raise
         except Exception as e:
             logger.exception(f'例行任务「{job.title}」失败')
             self._failed(run, repr(e))

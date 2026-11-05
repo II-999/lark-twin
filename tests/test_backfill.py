@@ -204,3 +204,33 @@ def test_backfill_gets_new_attempts_each_day_and_pauses_on_stop(tmp_path, monkey
     asyncio.run(m._run_local(jobs.get('backfill'), run))
     assert store.get(run.id).status == jobs.PAUSED and not [t for c, t in fake_client.sent if '失败' in t]
     assert store.due(jobs.get('backfill'), obj.cfg, datetime.now(), cur=(key, datetime.now()))[0] == 'run'   # 暂停不算次数
+
+
+def test_bootstrap_final_pass_when_last_batch_skipped(tmp_path, monkeypatch, fake_client):
+    obj, m, store = _maint(tmp_path, monkeypatch, fake_client)
+    store.put_state('backfill', {'done': True, 'finished_at': time.time()})
+    store.put_state('bootstrap', {'chats': [f'c{i}' for i in range(10)], 'next': 1})       # 2 批, 第 1 批已完成
+    store.create('bootstrap', 'batch-2', status='skipped')                                 # 最后一批被跳过
+    job = jobs.get('bootstrap')
+    assert m._once_slot(job) == 'final'
+    from larkx.daemon import prompts
+    assert '初始化记忆收尾' in prompts.bootstrap(obj.cfg, obj.storage, datetime.now(), OWNER)
+    from larkx.agent import TurnResult
+    run = store.create('bootstrap', 'final')
+    m.on_turn_done(type('E', (), {'run_id': run.id, 'chat_id': 'self'})(), TurnResult('success', False, 'ok', 1.0))
+    assert m._once_slot(job) is None and store.get_state('bootstrap')['done']
+
+
+def test_backfill_cancelled_on_sigterm_is_paused(tmp_path, monkeypatch, fake_client):
+    obj, m, store = _maint(tmp_path, monkeypatch, fake_client)
+    monkeypatch.setattr(type(m), '_job_backfill', lambda self, run: time.sleep(0.5), raising=False)
+    run = store.create('backfill', 'once-x')
+
+    async def go():
+        t = asyncio.create_task(m._run_local(jobs.get('backfill'), run))
+        await asyncio.sleep(0.05)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+    asyncio.run(go())
+    assert store.get(run.id).status == jobs.PAUSED
