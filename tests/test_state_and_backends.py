@@ -101,6 +101,44 @@ def test_agent_home_upgrades_untouched_template_and_commits(tmp_path):
     assert OLD_TEMPLATE_SHA256 and (TEMPLATES / 'CLAUDE.md').exists()
 
 
+def test_agent_home_repos_dir_and_gitignore_backfill(tmp_path):
+    from larkx.agent.home import ensure_agent_home
+    import subprocess
+    cfg = {'agent_home': str(tmp_path / 'agent'), 'agent_claude_dir': str(tmp_path / 'claude')}
+    home = ensure_agent_home(cfg)
+    assert (home / 'repos').is_dir()
+    assert {'downloads/', 'repos/'} <= set((home / '.gitignore').read_text(encoding='utf-8').splitlines())
+    # 旧版目录: .gitignore 只有 downloads/ 和用户自己加的行, 补上 repos/ 且不动原内容
+    (home / '.gitignore').write_text('downloads/\n*.log', encoding='utf-8')
+    ensure_agent_home(cfg)
+    assert (home / '.gitignore').read_text(encoding='utf-8') == 'downloads/\n*.log\nrepos/\n'
+    ensure_agent_home(cfg)
+    assert (home / '.gitignore').read_text(encoding='utf-8').count('repos/') == 1
+    # 自己克隆的仓库不进数字人目录的 git
+    (home / 'repos' / 'x').mkdir()
+    (home / 'repos' / 'x' / 'a.txt').write_text('x', encoding='utf-8')
+    status = subprocess.run(['git', '-C', str(home), 'status', '--porcelain'], capture_output=True, text=True).stdout
+    assert 'repos' not in status
+
+
+def test_agent_home_upgrades_previous_template(tmp_path):
+    import hashlib
+    from larkx.agent.home import OLD_TEMPLATE_SHA256, TEMPLATES, ensure_agent_home
+    current = (TEMPLATES / 'CLAUDE.md').read_bytes()
+    assert hashlib.sha256(current).hexdigest() not in OLD_TEMPLATE_SHA256
+    assert '## 代码仓库' in current.decode('utf-8')
+    # 上一版模板 = 当前模板去掉「代码仓库」一节, 未修改过的应被升级
+    text = current.decode('utf-8')
+    start = text.index('## 代码仓库')
+    previous = text[:start] + text[text.index('## ', start + 1):]
+    assert hashlib.sha256(previous.encode('utf-8')).hexdigest() in OLD_TEMPLATE_SHA256
+    home = tmp_path / 'agent'
+    home.mkdir()
+    (home / 'CLAUDE.md').write_text(previous, encoding='utf-8')
+    ensure_agent_home({'agent_home': str(home), 'agent_claude_dir': str(tmp_path / 'claude')})
+    assert (home / 'CLAUDE.md').read_bytes() == current
+
+
 def _task_args(text, **kw):
     base = dict(action='add', text=text, at=None, in_='10m', every=None, chat=None, root=None, all=False, json=True)
     base.update(kw)

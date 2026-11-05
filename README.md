@@ -127,7 +127,7 @@ larkx rule delete 1
 | `LARKX_ALERT_CMD` | 飞书登录失效时的备用告警命令，比如用 lark-cli 机器人身份发给你 |
 | `LARKX_WEB_URL` | 网页控制台的对外地址（Nginx 入口），用来生成登录链接 |
 
-数字人的人设在 `~/.larkx/agent/CLAUDE.md`，记忆在 `~/.larkx/agent/memory/`，都可以直接修改。
+数字人的人设在 `~/.larkx/agent/CLAUDE.md`，记忆在 `~/.larkx/agent/memory/`，都可以直接修改。数字人自己克隆的代码仓库放在 `~/.larkx/agent/repos/`，本机已有的仓库它会先查 `memory/repos.md` 直接用，不重复克隆。
 
 ## 注意
 

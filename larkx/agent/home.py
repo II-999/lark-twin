@@ -11,8 +11,9 @@ TEMPLATES = Path(__file__).parent / 'templates'
 OLD_TEMPLATE_SHA256 = {'6927812ddbec998de7f1785c415889ed74adb266f83768a6a5647216dad11bca',
                        'de2a5b963785a90cbcd3e8e3ae5a0f627804a044352d36d5d8eed506a97337a6',
                        '3e39cab454487972a823ba89b2b290b2019ee01882bf6edab2d46bcc632519a0',
-                       '23f7839130d2f6ada2e12fe75d3b57a5ac4688d313bccde0ee0b05526524f01c'}
-GITIGNORE = 'downloads/\n'
+                       '23f7839130d2f6ada2e12fe75d3b57a5ac4688d313bccde0ee0b05526524f01c',
+                       '37d1677e0b79a5b53a2efb1148a645e91c413dffec5dda17ae36352f13780a0d'}
+GITIGNORE = 'downloads/\nrepos/\n'
 MEMORY_INDEX = '# 记忆索引\n\n每行一条: - [标题](文件名.md) — 一句话说明。具体内容写在对应文件里。\n'
 
 
@@ -31,9 +32,20 @@ def ensure_agent_home(cfg: dict) -> Path:
         subprocess.run(['git', 'init', '-q', str(home)], check=True)
     _git(home, 'config', 'user.name', 'lark-twin')
     _git(home, 'config', 'user.email', 'lark-twin@localhost')
-    if not (home / '.gitignore').exists():
-        (home / '.gitignore').write_text(GITIGNORE, encoding='utf-8')
+    gitignore = home / '.gitignore'
+    if not gitignore.exists():
+        gitignore.write_text(GITIGNORE, encoding='utf-8')
+    else:
+        # 旧版目录的 .gitignore 缺新加的条目时补在末尾, 保留用户自己加的内容
+        text = gitignore.read_text(encoding='utf-8')
+        lines = {line.strip() for line in text.splitlines()}
+        missing = [line for line in GITIGNORE.splitlines() if line not in lines]
+        if missing:
+            sep = '' if not text or text.endswith('\n') else '\n'
+            gitignore.write_text(text + sep + ''.join(f'{line}\n' for line in missing), encoding='utf-8')
     (home / 'downloads').mkdir(exist_ok=True)
+    # 数字人自己克隆的代码仓库放这里, 不进数字人目录的 git
+    (home / 'repos').mkdir(exist_ok=True)
     # 人设和行为准则归用户所有, 只在首次创建; 用户没改过的旧版模板自动升级
     claude_md = home / 'CLAUDE.md'
     if not claude_md.exists():
