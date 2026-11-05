@@ -68,3 +68,38 @@ def test_disabled_job_cannot_run(tmp_path, monkeypatch, fake_client):
     from tests.test_reliability import _daemon
     obj = _daemon(tmp_path, fake_client, monkeypatch)
     assert '没有打开' in asyncio.run(obj.control('job:prune')) and obj.inbox.qsize() == 0
+
+
+def test_memory_archive_and_paths(client, tmp_path):
+    base = tmp_path / 'agent' / 'memory'
+    (base / 'archive').mkdir(parents=True, exist_ok=True)
+    (base / '人-赵六.md').write_text('---\ntype: 人\nname: 赵六\nupdated: 2026-11-03\n---\n同事', encoding='utf-8')
+    (base / 'archive' / '旧.md').write_text('旧内容', encoding='utf-8')
+    (base / 'MEMORY.md').write_text('# 索引', encoding='utf-8')
+    by = {f['name']: f for f in client.get('/api/memory').json()}
+    assert by['人-赵六.md']['meta']['name'] == '赵六' and by['archive/旧.md']['archived']
+    assert not by['MEMORY.md']['generated'] and client.get('/api/memory-issues').json() == []
+    assert client.put('/api/memory/MEMORY.md', json={'content': '手写'}, headers=H).status_code == 200   # 默认还是手写的
+    assert client.put('/api/memory/archive/旧.md', json={'content': '改'}, headers=H).status_code == 200
+    assert client.put('/api/memory/../x.md', json={'content': 'x'}, headers=H).status_code in (400, 404)
+    assert client.put('/api/memory/archive/../../x.md', json={'content': 'x'}, headers=H).status_code in (400, 404)
+    assert not (tmp_path / 'x.md').exists() and not (tmp_path / 'agent' / 'x.md').exists()
+
+
+def test_memory_structured_index_readonly(client, tmp_path, monkeypatch):
+    monkeypatch.setenv('LARKX_MEMORY_STRUCTURED', 'true')
+    base = tmp_path / 'agent' / 'memory'
+    base.mkdir(parents=True, exist_ok=True)
+    (base / 'MEMORY.md').write_text('# 索引', encoding='utf-8')
+    (base / '人-坏.md').write_text('---\ntype: 同事\n---\n', encoding='utf-8')
+    by = {f['name']: f for f in client.get('/api/memory').json()}
+    assert by['MEMORY.md']['generated']
+    assert client.put('/api/memory/MEMORY.md', json={'content': 'x'}, headers=H).status_code == 400
+    assert any(i['file'] == '人-坏.md' and i['level'] == 'error' for i in client.get('/api/memory-issues').json())
+
+
+def test_jobs_show_backfill_state(client):
+    jobs.JobStore(Storage()).put_state('backfill', {'order': ['a'], 'chats_done': 0, 'messages': 0})
+    d = client.get('/api/jobs').json()
+    assert d['backfill']['order'] == ['a'] and {j['name']: j['once'] for j in d['jobs']}['backfill']
+    assert client.get('/api/overview').json()['lifecycle']['backfill']['order'] == ['a']

@@ -16,19 +16,21 @@ from .storage.models import JobRun, JobState
 ACTIVE = ('queued', 'running')
 SETTLED = ('ok', 'skipped')
 STATUS_NAMES = {'queued': '排队', 'running': '运行中', 'ok': '完成', 'failed': '失败', 'skipped': '跳过',
-                'interrupted': '中断'}
+                'interrupted': '中断', 'paused': '暂停'}
+PAUSED = 'paused'  # 停服务时主动暂停(回填): 不算一次失败, 下次启动接着跑
 
 
 @dataclass(frozen=True)
 class Job:
     name: str
     title: str
-    kind: str        # local: daemon 里直接跑的代码; agent: 交给数字人的一轮(维护任务)
+    kind: str        # local: daemon 里直接跑的代码; agent: 交给数字人的一轮维护任务; report: 交给数字人写给本人的汇报
     when: Callable   # cfg -> (时, 分, 星期几或 None); 关掉时返回 None
     grace: int = 0   # 到点后超过这么多秒还没开始就不跑了, 记为跳过(0 = 当天内都补)
     max_attempts: int = 2  # 一个时段里总共最多跑几次(第一次 + 重试)
     retry_after: int = 1800
     after: str = ''        # 等这个任务当天这一次结束(完成、跳过或重试用完)后再跑
+    once: bool = False  # 一次性任务(回填、初始化记忆): 不按钟点, 由 daemon 判断时机并给出时段名; 做完前每天都有新的重试机会
 
 
 def _review_at(cfg):
@@ -49,6 +51,34 @@ def _before_review(cfg):
     return ((hour - 1) % 24 if 0 <= hour <= 23 else 3, 30, None)
 
 
+def _backfill_on(cfg):
+    return (0, 0, None) if int(cfg.get('backfill_days') or 0) > 0 else None
+
+
+def _bootstrap_on(cfg):
+    return (0, 0, None) if int(cfg.get('backfill_days') or 0) > 0 and 0 <= cfg.get('memory_review_hour', -1) <= 23 else None
+
+
+def briefing_time(cfg):
+    """LARKX_BRIEFING_AT 解析成 (时, 分); 关掉返回 None, 格式不对抛 ValueError。"""
+    text = str(cfg.get('briefing_at') or '').strip().lower()
+    if text in ('', 'off', 'none', '-1', 'false'):
+        return None
+    try:
+        t = datetime.strptime(text, '%H:%M')
+    except ValueError:
+        raise ValueError(f'LARKX_BRIEFING_AT 格式不对: {text!r}, 应为 HH:MM, 如 09:00')
+    return t.hour, t.minute
+
+
+def _briefing_at(cfg):
+    try:
+        t = briefing_time(cfg)
+    except ValueError:
+        return None
+    return (t[0], t[1], None) if t else None
+
+
 def _after_review(cfg):
     """回顾后半小时清理; 关掉回顾时按 4:30。要打开会话分类并配了保留天数才跑(默认都不删, 手动 larkx prune 随时可用)。"""
     if not cfg.get('chat_groups') or not (int(cfg.get('retention_archive_days') or 0) > 0
@@ -63,6 +93,9 @@ JOBS = [
     Job('review', '每日回顾', 'agent', _review_at),
     Job('consolidate', '每周整理记忆', 'agent', _consolidate_at),
     Job('prune', '清理旧数据', 'local', _after_review, after='profile'),
+    Job('briefing', '每日简报', 'report', _briefing_at, grace=3 * 3600),
+    Job('backfill', '回填历史', 'local', _backfill_on, once=True, max_attempts=3),
+    Job('bootstrap', '初始化记忆', 'agent', _bootstrap_on, once=True),
 ]
 
 
@@ -83,9 +116,9 @@ def slot(job: Job, cfg: dict, now: datetime):
 
 
 def next_time(job: Job, cfg: dict, now: datetime) -> Optional[datetime]:
-    """下一次计划时间(只用来展示)。"""
+    """下一次计划时间(只用来展示); 一次性任务没有。"""
     when = job.when(cfg)
-    if when is None:
+    if when is None or job.once:
         return None
     hour, minute, weekday = when
     for days in range(8):
@@ -182,13 +215,13 @@ class JobStore:
         finally:
             s.close()
 
-    def due(self, job: Job, cfg: dict, now: datetime):
-        """该不该跑: None 不跑; ('skip', 时段) 错过时间; ('run', 时段, 第几次)。"""
-        cur = slot(job, cfg, now)
+    def due(self, job: Job, cfg: dict, now: datetime, cur=None):
+        """该不该跑: None 不跑; ('skip', 时段) 错过时间; ('run', 时段, 第几次)。一次性任务由调用方给出 cur=(时段, 计划时间)。"""
+        cur = cur if job.once else slot(job, cfg, now)
         if not cur:
             return None
         key, planned = cur
-        runs = self.runs(job.name, key)
+        runs = [r for r in self.runs(job.name, key) if r.status != PAUSED]
         if any(r.status in ACTIVE + SETTLED for r in runs):
             return None
         if not runs and job.grace and (now - planned).total_seconds() > job.grace:

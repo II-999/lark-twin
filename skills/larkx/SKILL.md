@@ -149,6 +149,15 @@ larkx chats --attention 重点关注 --active 7d          # 按关注度、活�
 larkx prune --dry-run                                # 按保留天数清理旧消息, 先看会删多少; --days N --chat 会话 单独清
 ```
 
+## 回填、简报、记忆
+
+```bash
+larkx backfill --dry-run                 # 看最近 N 天有多少会话要回填; 去掉 --dry-run 真回填, --chat 只补某个会话
+larkx jobs run briefing                  # 马上发一份工作简报(要先设 LARKX_BRIEFING_AT)
+larkx memory list --type 事 --status 待跟进 --due 7d   # 结构化记忆: 按类型、状态、截止日期、--about 人或群筛
+larkx memory lint                        # 检查字段、过期、体积; memory stats 统计; memory index 重建 MEMORY.md
+```
+
 ## 例行任务
 
 ```bash

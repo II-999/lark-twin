@@ -108,7 +108,7 @@ const chatLabel = (id, name) => name || chatNames[id] || (id ? `会话 ${id}` : 
 
 const KIND = { message: '消息', task: '任务', say: '终端指令', system: '维护', report: '汇报', web: '网页' };
 const ATT = { focus: '重点关注', light: '简单关注', archive: '只存不看' };
-const RUN = { queued: '排队', running: '运行中', ok: '完成', failed: '失败', skipped: '跳过', interrupted: '中断' };
+const RUN = { queued: '排队', running: '运行中', ok: '完成', failed: '失败', skipped: '跳过', interrupted: '中断', paused: '暂停' };
 const runTag = r => r && r.status ? h('span', { class: 'tag' + (['failed', 'interrupted'].includes(r.status) ? ' bad' : '') }, RUN[r.status] || r.status) : h('span', { class: 'muted' }, '还没跑过');
 // daemon: 不经过数字人、由 daemon 直接做的(没权限的人想唤起时的自动回复、触发时在那条消息上加的表情回复)
 const ACTOR = { agent: '数字人', daemon: '自动回复' };
@@ -243,11 +243,15 @@ async function viewOverview() {
       tile(o.tasks_pending, '待执行任务'), tile(o.takeovers.length, '接管中'), tile(o.memory_files.length, '记忆文件'));
     put(now, h('h2', {}, '现在'), turnCard(o),
       o.takeovers.length ? h('div', { class: 'meta', style: 'margin-top:10px' }, '接管中:', o.takeovers.map(t => h('span', { class: 'tag' }, `${chatLabel(t.chat_id)} 到 ${fmt(t.until, false)}`))) : null);
-    const L = o.lifecycle || {}, att = L.attention || {};
+    const L = o.lifecycle || {}, att = L.attention || {}, bf = L.backfill || {}, bs = L.bootstrap || {};
+    const steps = [];
+    if (bf.order && !bf.done) steps.push(`回填历史中：${bf.chats_done || 0}/${bf.order.length} 个会话，已入库 ${bf.messages || 0} 条`);
+    else if (bf.done && bs.chats && !bs.done) steps.push(`回填完成（${bf.messages || 0} 条），正在初始化记忆：${bs.next || 0}/${Math.ceil(bs.chats.length / 8)} 批`);
     put(life, h('h2', {}, '例行任务', h('span', { class: 'grow' }), h('a', { href: '#jobs', style: 'font-weight:400' }, '全部')),
       L.chat_groups ? h('div', { class: 'meta' }, Object.entries(ATT).map(([k, v]) => h('span', { class: 'tag' }, `${v} ${att[k] || 0}`)),
         h('a', { href: '#chats' }, '管理会话')) : null,
-      L.jobs ? jobsTable(L.jobs.filter(j => j.enabled)) : null);
+      steps.map(t => h('p', { class: 'sec' }, t)),
+      L.jobs ? jobsTable(L.jobs.filter(j => j.enabled && !(j.once && j.last && j.last.status === 'ok'))) : null);
     if (!chartDrawn) { chartCard.append(hourlyChart(o.hourly).node); chartDrawn = true; }
   });
   every(15000, async () => {
@@ -517,22 +521,48 @@ async function viewMemory() {
   const hist = card('变化记录');
   let current = null;
 
+  let issuesCard = null;
   async function load() {
     const list = await api('/api/memory');
+    const structured = list.length && list[0].structured;
     if (!current && list.length) current = list[0].name;
-    put(files, h('h2', {}, '文件'), list.map(f => h('a', { href: '#memory', class: f.name === current ? 'on' : null,
-      onclick: e => { e.preventDefault(); current = f.name; load(); } }, f.name)),
+    const link = f => h('a', { href: '#memory', class: f.name === current ? 'on' : null, title: f.meta && f.meta.desc || '',
+      onclick: e => { e.preventDefault(); current = f.name; load(); } }, structured && f.meta && f.meta.name ? f.meta.name : f.name,
+      structured && f.meta && f.meta.status ? h('span', { class: 'tag', style: 'margin-left:6px' }, f.meta.status) : null);
+    const current_ = list.filter(f => !f.archived), archived = list.filter(f => f.archived);
+    let main = current_.map(link);
+    if (structured) {  // 结构化记忆: 按类型分组
+      const byType = {};
+      current_.filter(f => !f.generated).forEach(f => (byType[(f.meta && f.meta.type) || '其他'] ||= []).push(f));
+      main = [current_.filter(f => f.generated).map(link),
+        ['我', '人', '群', '事', '其他'].filter(t => byType[t]).map(t => [h('div', { class: 'muted', style: 'margin-top:8px' }, t), byType[t].map(link)])];
+      const issues = await api('/api/memory-issues');
+      if (!issuesCard) { issuesCard = h('section', { class: 'card' }); hist.before(issuesCard); }
+      put(issuesCard, h('h2', {}, `检查（${issues.length}）`), issues.length ? h('div', { class: 'list' }, issues.map(i =>
+        h('div', { class: 'item' }, h('span', { class: 'tag' + (i.level === 'error' ? ' bad' : '') }, i.level === 'error' ? '错误' : '提醒'), ' ', h('b', {}, i.file), ' ', i.message)))
+        : h('div', { class: 'empty' }, '没有问题'));
+    }
+    put(files, h('h2', {}, '文件'), main,
+      archived.length ? [h('div', { class: 'muted', style: 'margin-top:8px' }, `归档（${archived.length}）`), archived.map(link)] : null,
       h('button', { class: 'btn small', style: 'margin-top:10px', onclick: () => {
-        const name = prompt('新文件名（以 .md 结尾）', 'notes.md');
-        if (name) act(async () => { await api(`/api/memory/${encodeURIComponent(name)}`, { method: 'PUT', body: { content: '' } }); current = name; load(); }, '已新建');
+        const name = prompt(structured ? '新文件名（我.md、人-名字.md、群-群名.md、事-主题.md）' : '新文件名（以 .md 结尾）', structured ? '事-新的事.md' : 'notes.md');
+        if (!name) return;
+        let content = '';
+        if (structured) {
+          const today = new Date().toISOString().slice(0, 10);
+          const type = name.startsWith('人-') ? '人' : name.startsWith('群-') ? '群' : name.startsWith('我') ? '我' : '事';
+          content = `---\ntype: ${type}\nname: ${name.replace(/^(人|群|事)-/, '').replace(/\.md$/, '')}\ndesc: \n${type === '事' ? 'status: 进行中\ndue: \n' : ''}updated: ${today}\n---\n`;
+        }
+        act(async () => { await api(`/api/memory/${encodeURI(name)}`, { method: 'PUT', body: { content } }); current = name; load(); }, '已新建');
       } }, '新建'));
     const f = list.find(x => x.name === current);
     if (!f) { put(editorCard, h('div', { class: 'empty' }, '还没有记忆')); return; }
-    const ta = h('textarea', { class: 'editor' }); ta.value = f.content;
-    put(editorCard, h('h2', {}, f.name, h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, '更新于 ' + fmt(f.mtime)),
+    const ta = h('textarea', { class: 'editor', readonly: f.generated }); ta.value = f.content;
+    const path = encodeURI(f.name);
+    put(editorCard, h('h2', {}, f.name, h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, f.generated ? '由程序按各文件的字段生成，只读' : '更新于 ' + fmt(f.mtime)),
       f.name !== 'MEMORY.md' ? h('button', { class: 'btn small danger', onclick: () => confirm(`删除 ${f.name}?`) &&
-        act(async () => { await api(`/api/memory/${encodeURIComponent(f.name)}`, { method: 'DELETE' }); current = null; load(); }, '已删除') }, '删除') : null,
-      h('button', { class: 'btn small primary', onclick: () => act(async () => { await api(`/api/memory/${encodeURIComponent(f.name)}`, { method: 'PUT', body: { content: ta.value } }); loadHist(); }, '已保存') }, '保存')), ta);
+        act(async () => { await api(`/api/memory/${path}`, { method: 'DELETE' }); current = null; load(); }, '已删除') }, '删除') : null,
+      !f.generated ? h('button', { class: 'btn small primary', onclick: () => act(async () => { await api(`/api/memory/${path}`, { method: 'PUT', body: { content: ta.value } }); load(); loadHist(); }, '已保存') }, '保存') : null), ta);
   }
   async function loadHist() {
     const rows = await api('/api/history');
@@ -670,7 +700,7 @@ function jobsTable(jobs, refresh) {
     h('td', {}, h('b', {}, j.title), h('div', { class: 'muted mono', style: 'font-size:12px' }, j.name)),
     h('td', {}, j.enabled ? runTag(j.last) : h('span', { class: 'tag' }, '已关闭')),
     h('td', { class: 'muted' }, j.last && j.last.created_at ? `上次 ${fmt(j.last.created_at)}` : ''),
-    h('td', { class: 'muted' }, j.next ? `下次 ${fmt(j.next)}` : ''),
+    h('td', { class: 'muted' }, j.once ? '一次性' : j.next ? `下次 ${fmt(j.next)}` : ''),
     h('td', { class: 'muted', style: 'max-width:420px' }, j.last ? (j.last.error || j.last.summary || '').slice(0, 120) : ''),
     h('td', {}, j.enabled ? h('button', { class: 'btn small', onclick: () => confirm(`现在运行「${j.title}」?`) &&
       act(async () => { const r = await api(`/api/jobs/${j.name}/run`, { method: 'POST' }); refresh && refresh(); return r; }, r => r.result) }, '立即运行') : null)))));
@@ -685,7 +715,7 @@ async function viewJobs() {
     put(top, h('h2', {}, '任务'), jobsTable(d.jobs, load));
     put(log, h('h2', {}, '运行记录'), d.runs.length ? h('table', {}, h('tbody', {}, d.runs.map(r => h('tr', {},
       h('td', { class: 'muted', style: 'white-space:nowrap' }, fmt(r.created_at)), h('td', {}, r.job), h('td', {}, runTag(r)),
-      h('td', { class: 'muted' }, r.trigger === 'manual' ? '手动' : ''),
+      h('td', { class: 'muted' }, r.trigger === 'manual' ? '手动' : r.trigger === 'chain' ? '接续' : ''),
       h('td', {}, clamp(r.error || r.summary || '')))))) : h('div', { class: 'empty' }, '还没有运行记录'));
   }
   every(15000, load);

@@ -57,6 +57,12 @@ DEFAULTS = {
     "retention_light_days": 0,
     # 建议分类时, 私聊机器人的名字含这些词(逗号分隔)就算"需要你处理的通知"(内置了审批、权限、日历等常见的)
     "bot_action_keywords": "",
+    # 结构化记忆: 记忆文件开头写字段(类型、相关的人和群、状态、截止日期), memory/MEMORY.md 改由代码按字段生成; 默认关
+    "memory_structured": False,
+    # 首次启动回填最近多少天的聊天(只回填一次, 之后靠长连接和补收), 回填完接着初始化记忆; 0 = 不回填(默认)
+    "backfill_days": 0,
+    # 每天几点给本人私聊发工作简报(HH:MM, 如 09:00, 周一附上周回顾); 空或 off 关闭(默认)。超过 3 小时没发出就不发了
+    "briefing_at": "",
     # 数字人发出的消息末尾自动加上的签名, 如 "🤖 lark-twin · 数字分身"; 和正文隔一个空行, 前面加 "—— "。留空不加
     "reply_signature": "",
     # 数字人在别的会话以本人名义发消息时, 抄送一份到本人私聊
@@ -132,7 +138,7 @@ def load_config() -> dict:
         v = os.environ.get("LARKX_" + key.upper())
         if v:
             cfg[key] = v
-    for key in ("mark_read", "keep_unread", "allow_self", "mirror", "chat_groups"):
+    for key in ("mark_read", "keep_unread", "allow_self", "mirror", "chat_groups", "memory_structured"):
         if isinstance(cfg.get(key), str):
             cfg[key] = _as_bool(cfg[key])
     # LARKX_AGENT_CLI 是 claude_cli 的旧名
@@ -143,7 +149,7 @@ def load_config() -> dict:
     cfg["memory_flush_ratio"] = float(cfg["memory_flush_ratio"])
     for key in ("send_rate_limit", "inbox_max_age", "catchup_interval", "takeover_default", "web_port",
                 "deny_reply_cooldown", "memory_consolidate_weekday",
-                "retention_archive_days", "retention_light_days"):
+                "retention_archive_days", "retention_light_days", "backfill_days"):
         cfg[key] = int(cfg[key])
     # LARKX_DENY_REPLY 写成空的是关掉这个功能, 不能像别的配置一样当成没写、退回默认值
     if os.environ.get("LARKX_DENY_REPLY") is not None:

@@ -155,6 +155,15 @@ larkx messages <chat_id> --since 24h --json                  # 只看最近一�
 
 关注度：重点关注（每条都看、进记忆）、简单关注（只管和本人有关的）、只存不看（不进回顾）。飞书里的免打扰只是本人的提醒设置，不影响关注度。
 
+## 长期记忆的字段（打开结构化记忆时）
+
+每日回顾、整理记忆的提示里会给出记忆文件的格式：一个主题一个文件，开头写 `type`、`name`、`updated` 等字段，`MEMORY.md` 由代码生成，不用手改。
+
+```bash
+larkx memory list --type 事 --status 待跟进 --json     # 按字段筛; --about <人或群> 找相关的记忆
+larkx memory lint                                       # 写完记忆检查一遍, 有错误就改掉
+```
+
 ## 例行任务（只能看）
 
 ```bash
@@ -172,4 +181,4 @@ larkx whitelist list --json    # 除本人外还有谁能唤起你；rule 是当
 
 ## 不能用的命令
 
-`larkx api`、`auth`、`listen`、`daemon`、`service`、`doctor`、`say`、`skill`、`web`、`prune`、`jobs run` 以及 `whitelist add` / `remove` 都会被拒绝。需要的能力如果上面没有，就告诉本人。
+`larkx api`、`auth`、`listen`、`daemon`、`service`、`doctor`、`say`、`skill`、`web`、`prune`、`backfill`、`jobs run` 以及 `whitelist add` / `remove` 都会被拒绝。需要的能力如果上面没有，就告诉本人。

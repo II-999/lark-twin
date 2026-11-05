@@ -11,7 +11,7 @@ from .storage import Storage
 
 # 数字人(LARKX_ACTOR=agent)不能用的子命令: 原始网关接口、登录凭证、再起一个监听进程、管理自己的服务、
 # 以本人身份给自己下指令(say)、改本机 agent 的 skill
-AGENT_FORBIDDEN = {'api', 'auth', 'listen', 'daemon', 'service', 'doctor', 'say', 'skill', 'web', 'prune'}
+AGENT_FORBIDDEN = {'api', 'auth', 'listen', 'daemon', 'service', 'doctor', 'say', 'skill', 'web', 'prune', 'backfill'}
 
 
 def _print_json(obj):
@@ -937,7 +937,7 @@ def cmd_jobs(args):
         if not job:
             return _fail(args, f'用法: larkx jobs run <名字>, 可用: {", ".join(j.name for j in jobs.JOBS)}')
         if args.preview:
-            if job.kind != 'agent':
+            if job.kind == 'local':
                 return _fail(args, f'{job.name} 不是交给数字人的任务, 没有提示词')
             print(BUILDERS[job.name](cfg, st, now, _owner_id()))
             return 0
@@ -963,6 +963,110 @@ def cmd_jobs(args):
         detail = ((last.get('error') or last.get('summary') or '').replace('\n', ' ')[:80]) if last else ''
         print(f"{r['name']:<12} {r['title']}  {'开' if r['enabled'] else '关'}  {state_text}"
               + (f"  下次 {r['next']}" if r['next'] else '') + (f"\n    {detail}" if detail else ''))
+    return 0
+
+
+def cmd_backfill(args):
+    """回填历史消息(首次启动时 daemon 会自动做一次)。数字人不能用。"""
+    from datetime import timedelta
+    from . import backfill, groups, jobs
+    st, cfg = Storage(), load_config()
+    store = jobs.JobStore(st)
+    days = args.days or int(cfg.get('backfill_days') or 30)
+    running = store.last('backfill')
+    if running and running.status == 'running' and running.started_at and \
+            running.started_at > datetime.now() - timedelta(minutes=30):
+        return _fail(args, 'daemon 正在回填, 进度用 larkx jobs 查看')
+    client = LarkClient(LarkAuth())
+    owner = str(client.auth.user_id)
+    if args.dry_run:
+        ids = args.chat or client.feed_chats(time.time() - days * 86400, max_pages=50)
+        print(f'最近 {days} 天有更新的会话 {len(ids)} 个; 每个最多 {backfill.PER_CHAT} 条(测试/机器人类只拉 '
+              f'{backfill.LOW_VALUE_DAYS} 天、最多 {backfill.LOW_VALUE_CAP} 条), 总量上限 {backfill.TOTAL_CAP} 条')
+        return 0
+
+    def show(s):
+        print(f"\r  {s.get('chats_done', 0)}/{len(s.get('order') or [])} 个会话, 入库 {s.get('messages', 0)} 条", end='',
+              flush=True, file=sys.stderr)
+    if args.chat:
+        ids = _resolve_chats(args, groups.ChatStore(st), args.chat)
+        if ids is None:
+            return 1
+        res = backfill.Backfill(client, st, owner, days, progress=show).run(only=ids)
+    else:
+        saved = {} if args.again else store.get_state('backfill')
+        if saved.get('done'):
+            return _fail(args, '已经回填过了; 要重新回填用 --again, 只补某个会话用 --chat')
+
+        def progress(s):
+            if s.get('done') and not s.get('finished_at'):
+                s['finished_at'] = time.time()
+            store.put_state('backfill', s)
+            show(s)
+        run = store.create('backfill', f'manual-{int(time.time())}', 'manual')
+        store.start(run.id)
+        try:
+            res = backfill.Backfill(client, st, owner, days, saved=saved, progress=progress).run()
+        except Exception as e:
+            store.fail(run.id, repr(e))
+            raise
+        store.finish(run.id, backfill.summary(res))
+        if cfg.get('chat_groups'):
+            prof = store.create('profile', 'after-backfill', 'manual')
+            r = groups.profile_all(client, st, owner)
+            store.finish(prof.id, f"{r['chats']} 个会话; 新会话 {len(r['new'])} 个")
+    print(file=sys.stderr)
+    if args.json:
+        _print_json({'ok': True, **res})
+    else:
+        tail = '' if args.chat else ('; 会话画像已刷新' if cfg.get('chat_groups') else '') + \
+            ('; daemon 接着会初始化记忆' if 0 <= cfg.get('memory_review_hour', -1) <= 23 else '')
+        print(backfill.summary(res) + tail)
+    return 0
+
+
+def cmd_memory(args):
+    """长期记忆: list 按字段筛选, lint 检查, stats 统计, index 重建索引。数字人也能用。"""
+    from pathlib import Path
+    from . import memory
+    cfg = load_config()
+    home = Path(cfg['agent_home'])
+    if args.action == 'index':
+        if not cfg.get('memory_structured'):
+            return _fail(args, '没有打开结构化记忆(LARKX_MEMORY_STRUCTURED), MEMORY.md 还是手写的, 不自动生成')
+        changed = memory.build_index(home)
+        return (print('索引已更新' if changed else '索引已是最新') or 0)
+    if args.action == 'stats':
+        s = memory.stats(home)
+        if args.json:
+            _print_json(s)
+        else:
+            print(f"{s['files']} 个记忆文件(" + '、'.join(f'{k} {v}' for k, v in s['by_type'].items()) +
+                  f"), 归档 {s['archived']} 个, 待跟进 {s['todo']} 件, {s['bytes'] // 1000}KB; "
+                  f"问题: {s['errors']} 个错误、{s['warnings']} 个提醒")
+        return 0
+    if args.action == 'lint':
+        issues = memory.lint(home)
+        if args.json:
+            _print_json([{'level': l, 'file': f, 'message': m} for l, f, m in issues])
+        else:
+            for l, f, m in issues:
+                print(f"{'❌' if l == 'error' else '⚠️ ' if l == 'warn' else 'ℹ️ '} {f}: {m}")
+            print('没有问题' if not issues else f'共 {len(issues)} 个问题')
+        return 1 if any(l == 'error' for l, _, _ in issues) else 0
+    try:
+        due = state.parse_duration(args.due) // 86400 if args.due else None
+    except ValueError as e:
+        return _fail(args, str(e))
+    rows = memory.select(home, args.type, args.status, due, args.about)
+    if args.json:
+        _print_json([{'file': e['file'], **e['meta']} for e in rows])
+        return 0
+    for e in rows:
+        m = e['meta']
+        extra = ' '.join(x for x in (m.get('status', ''), f"截止 {m['due']}" if m.get('due') else '',
+                                     f"更新 {m['updated']}" if m.get('updated') else '') if x)
+        print(f"[{m.get('type', '?')}] {m.get('name') or e['file']} ({e['file']}) {extra}")
     return 0
 
 
@@ -1377,6 +1481,21 @@ def main():
     p.add_argument('--preview', action='store_true', help='run: 只打印交给数字人的提示词, 不运行')
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_jobs)
+    p = sub.add_parser('backfill', help='回填历史消息(首次启动时会自动做一次); 数字人不能用')
+    p.add_argument('--days', type=int, help='回填最近多少天, 默认 LARKX_BACKFILL_DAYS')
+    p.add_argument('--chat', action='append', default=[], help='只回填这个会话(名字或 chat_id), 可重复')
+    p.add_argument('--again', action='store_true', help='已经回填过也重新回填一遍')
+    p.add_argument('--dry-run', action='store_true', help='只看会回填多少会话')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_backfill)
+    p = sub.add_parser('memory', help='长期记忆: 按字段筛选、检查、统计、重建索引')
+    p.add_argument('action', nargs='?', choices=['list', 'lint', 'stats', 'index'], default='list')
+    p.add_argument('--type', choices=['我', '人', '群', '事'])
+    p.add_argument('--status', choices=['进行中', '待跟进', '已完成'])
+    p.add_argument('--due', help='截止日期在多久以内(含已过期), 如 7d')
+    p.add_argument('--about', help='和某个人或群有关(名字)')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_memory)
     p = sub.add_parser('prune', help='清理旧数据: 默认按关注度和保留期, 也可以 --days N --chat 会话 单独清; 数字人不能用')
     p.add_argument('--days', type=int, help='只保留最近多少天(要配合 --chat)')
     p.add_argument('--chat', action='append', default=[], help='会话名或 chat_id, 可重复')

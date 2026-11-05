@@ -23,7 +23,7 @@ RELAY_DIR = STATE_DIR / 'relay'
 FORWARD_DIR = STATE_DIR / 'forward'
 # 补收漏推消息只看 7 天内有动静的会话, 登记留得比它久, 中转、转发的消息无论什么时候补收到都认得出来
 RELAY_TTL = 8 * 86400
-# report: daemon 让数字人给本人写的汇报(如接管结束的总结), 只能发到本人私聊
+# report: daemon 让数字人给本人写的汇报(每日简报、接管总结), 只能发到本人私聊
 KINDS = ('message', 'task', 'say', 'system', 'report')
 
 
