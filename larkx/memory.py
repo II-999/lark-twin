@@ -101,9 +101,33 @@ def lint(home: Path, today: date = None) -> list:
     return out
 
 
-def _index_line(e) -> str:
+def _old_descs(path: Path) -> dict:
+    """旧索引里每个文件的一句话说明(手写的 MEMORY.md 也是这个格式), 文件开头没写 desc 时沿用。"""
+    if not path.exists():
+        return {}
+    out = {}
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+        m = re.match(r'^\s*[-*]\s*\[[^\]]*\]\(([^)]+)\)\s*[—–-]+\s*(.+)$', line)
+        if m:
+            out[m.group(1).strip()] = m.group(2).strip()
+    return out
+
+
+def _keep_desc(home: Path, e, old: dict):
+    """文件开头有字段但没写 desc、旧索引里有说明: 把说明写进文件的字段里(只做一次), 之后都从字段生成。
+    没有字段的旧文件不改, 每次沿用旧索引里的说明。"""
+    desc = old.get(e['file'])
+    if not desc or e['meta'].get('desc') or not e['meta']:
+        return
+    p = Path(home) / 'memory' / e['file']
+    text = p.read_text(encoding='utf-8')
+    p.write_text(re.sub(r'\A(---\s*\n)', lambda m: m.group(1) + f'desc: {desc}\n', text, count=1), encoding='utf-8')
+    e['meta']['desc'] = desc
+
+
+def _index_line(e, old=None) -> str:
     m = e['meta']
-    desc = m.get('desc') or ''
+    desc = m.get('desc') or ((old or {}).get(e['file']) if not m else '') or ''
     if m.get('type') == '事':
         bits = [b for b in (m.get('status'), f"截止 {m['due']}" if m.get('due') else '') if b]
         desc = '; '.join([x for x in (desc, ' '.join(bits)) if x])
@@ -115,9 +139,14 @@ def build_index(home: Path) -> bool:
     path = Path(home) / 'memory' / INDEX
     if not path.parent.is_dir():
         return False
+    old = _old_descs(path)
+    # 代码生成的索引里, 事的说明后面拼了状态和截止日期, 不能再当成说明写回文件; 只有手写的索引才迁移
+    handwritten = path.exists() and not path.read_text(encoding='utf-8', errors='replace').startswith(INDEX_HEAD)
     by_type = {t: [] for t in TYPES}
     other = []
     for e in entries(home):
+        if handwritten:
+            _keep_desc(home, e, old)
         (by_type.get(e['meta'].get('type')) if e['meta'].get('type') in TYPES else other).append(e)
     parts = [INDEX_HEAD]
     for t, rows in list(by_type.items()) + [('其他(还没有字段)', other)]:
@@ -125,7 +154,7 @@ def build_index(home: Path) -> bool:
             if t == '事':
                 order = {s: i for i, s in enumerate(('待跟进', '进行中', '', '已完成'))}
                 rows.sort(key=lambda e: (order.get(e['meta'].get('status', ''), 2), e['meta'].get('due') or '9999'))
-            parts.append(f'\n## {t}\n' + '\n'.join(_index_line(e) for e in rows))
+            parts.append(f'\n## {t}\n' + '\n'.join(_index_line(e, old) for e in rows))
     text = '\n'.join(parts).rstrip() + '\n'
     if path.exists() and path.read_text(encoding='utf-8') == text:
         return False

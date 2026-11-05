@@ -115,7 +115,7 @@ def test_daemon_chain_backfill_profile_bootstrap(tmp_path, monkeypatch, fake_cli
         while obj.maintenance._tasks:
             await asyncio.gather(*list(obj.maintenance._tasks))
     asyncio.run(settle())
-    assert not store.runs('backfill', 'once')                       # 第一轮补收还没结束, 先不回填
+    assert store.last('backfill') is None                           # 第一轮补收还没结束, 先不回填
     obj._feed_since = time.time()
     asyncio.run(settle())
     assert store.get_state('backfill')['done'] and store.last('backfill').status == 'ok'
@@ -159,3 +159,48 @@ def test_doctor_backfill(tmp_path):
     c = doctor.check_backfill(cfg, st)
     assert c['level'] == 'ok' and '2/2 个会话, 30 条' in c['detail'] and '记忆已初始化' in c['detail']
     assert doctor.check_backfill(dict(cfg, backfill_days=0), st)['level'] == 'ok'
+
+
+def _maint(tmp_path, monkeypatch, fake_client, **cfg):
+    from tests.test_reliability import _daemon
+    obj = _daemon(tmp_path, fake_client, monkeypatch)
+    obj.cfg.update(memory_review_hour=4, memory_consolidate_weekday=-1, backfill_days=30, **cfg)
+    obj.auth.user_id = OWNER
+    return obj, obj.maintenance, obj.maintenance.store
+
+
+def test_bootstrap_skips_batch_that_keeps_failing(tmp_path, monkeypatch, fake_client):
+    """某一批重试用完(包括被重启打断): 跳过它接着下一批, 不会永远卡住。"""
+    obj, m, store = _maint(tmp_path, monkeypatch, fake_client)
+    store.put_state('backfill', {'done': True, 'finished_at': time.time()})
+    store.put_state('bootstrap', {'chats': [f'c{i}' for i in range(20)], 'next': 0})       # 3 批
+    job = jobs.get('bootstrap')
+    assert m._once_slot(job) == 'batch-1'
+    for i in (1, 2):
+        r = store.create('bootstrap', 'batch-1', attempt=i)
+        store._set(r.id, status='interrupted')
+    assert m._once_slot(job) == 'batch-2' and store.get_state('bootstrap')['skipped'] == [1]
+    store.create('bootstrap', 'batch-2', status='skipped')              # 本人 /stop 打断了这一批
+    store.finish(store.create('bootstrap', 'batch-3').id)
+    assert m._once_slot(job) == 'batch-3'                     # 第 3 批已完成, 由 on_turn_done 推进
+    bs = store.get_state('bootstrap')
+    bs['next'] = 3
+    store.put_state('bootstrap', bs)
+    assert m._once_slot(job) is None and store.get_state('bootstrap')['done']
+    from larkx import doctor
+    assert '跳过了第 1、2 批' in doctor.check_backfill(obj.cfg, obj.storage)['detail']
+
+
+def test_backfill_gets_new_attempts_each_day_and_pauses_on_stop(tmp_path, monkeypatch, fake_client):
+    obj, m, store = _maint(tmp_path, monkeypatch, fake_client)
+    obj._feed_since = time.time()
+    key = m._once_slot(jobs.get('backfill'))
+    assert key == 'once-' + datetime.now().strftime('%Y-%m-%d')            # 按天给时段, 第二天接着回填
+    chats = {f'g{i}': history(f'g{i}', 20) for i in range(3)}
+    obj.client = HistoryClient(chats, {c: c for c in chats})
+    monkeypatch.setattr(backfill, 'PAUSE', 0)
+    m.stop()                                                                # 停服务: 第一批之前就停
+    run = store.create('backfill', key)
+    asyncio.run(m._run_local(jobs.get('backfill'), run))
+    assert store.get(run.id).status == jobs.PAUSED and not [t for c, t in fake_client.sent if '失败' in t]
+    assert store.due(jobs.get('backfill'), obj.cfg, datetime.now(), cur=(key, datetime.now()))[0] == 'run'   # 暂停不算次数

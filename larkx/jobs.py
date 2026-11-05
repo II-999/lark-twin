@@ -16,7 +16,8 @@ from .storage.models import JobRun, JobState
 ACTIVE = ('queued', 'running')
 SETTLED = ('ok', 'skipped')
 STATUS_NAMES = {'queued': '排队', 'running': '运行中', 'ok': '完成', 'failed': '失败', 'skipped': '跳过',
-                'interrupted': '中断'}
+                'interrupted': '中断', 'paused': '暂停'}
+PAUSED = 'paused'  # 停服务时主动暂停(回填): 不算一次失败, 下次启动接着跑
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ class Job:
     max_attempts: int = 2  # 一个时段里总共最多跑几次(第一次 + 重试)
     retry_after: int = 1800
     after: str = ''        # 等这个任务当天这一次结束(完成、跳过或重试用完)后再跑
-    once: bool = False  # 一次性任务(回填、初始化记忆): 不按钟点, 由 daemon 判断时机并给出时段名
+    once: bool = False  # 一次性任务(回填、初始化记忆): 不按钟点, 由 daemon 判断时机并给出时段名; 做完前每天都有新的重试机会
 
 
 def _review_at(cfg):
@@ -220,7 +221,7 @@ class JobStore:
         if not cur:
             return None
         key, planned = cur
-        runs = self.runs(job.name, key)
+        runs = [r for r in self.runs(job.name, key) if r.status != PAUSED]
         if any(r.status in ACTIVE + SETTLED for r in runs):
             return None
         if not runs and job.grace and (now - planned).total_seconds() > job.grace:

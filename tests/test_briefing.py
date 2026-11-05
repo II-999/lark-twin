@@ -150,3 +150,15 @@ def test_new_chats_listed(st):
     groups.ChatStore(st).assign(['g1'], attention='light')                 # 确认过的不算新会话
     d = digest.briefing_data(st, OWNER, cfg={'chat_groups': True})
     assert '项目群' not in {c['name'] for c in d['new_chats']} and '新加入的会话' in digest.render(d)
+
+
+def test_briefing_sent_then_error_is_not_resent(tmp_path, monkeypatch, fake_client):
+    """数字人已经发出简报, 这一轮之后报错或中断: 算完成, 不再补发数据版。"""
+    from larkx.agent import TurnResult
+    obj = _daemon(tmp_path, monkeypatch, fake_client)
+    for result in (TurnResult('error_during_execution', True, '', 1.0), None):
+        run = obj.maintenance.store.create('briefing', f'x{id(result)}')
+        obj.storage.log_action(actor='agent', action='send', chat_id='self', content='简报', turn_ref=run.ref)
+        n = len(fake_client.sent)
+        obj.maintenance.on_turn_done(type('E', (), {'run_id': run.id, 'chat_id': 'self'})(), result)
+        assert obj.maintenance.store.get(run.id).status == 'ok' and len(fake_client.sent) == n

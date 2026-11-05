@@ -117,6 +117,7 @@ class Daemon:
         try:
             await self.listener.run_forever()
         finally:
+            self.maintenance.stop()
             for w in workers:
                 w.cancel()
             state.clear_turn()

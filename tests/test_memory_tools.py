@@ -122,3 +122,14 @@ def test_doctor_memory(home, tmp_path):
     assert c['level'] == 'ok' and '待跟进 1 件' in c['detail']
     write(home, '人-坏.md', '---\ntype: 同事\n---\n')
     assert doctor.check_memory(on)['level'] == 'warn'
+
+
+def test_index_keeps_handwritten_descs(home):
+    (home / 'memory' / 'MEMORY.md').write_text('# 索引\n\n- [陈述](人-赵六.md) — 后端负责人, 管审核\n'
+                                                '- [老笔记](老笔记.md) — 以前的零散笔记\n', encoding='utf-8')
+    memory.build_index(home)
+    text = (home / 'memory' / 'MEMORY.md').read_text(encoding='utf-8')
+    assert '[赵六](人-赵六.md) — 后端负责人, 管审核' in text and '[老笔记](老笔记.md) — 以前的零散笔记' in text
+    assert 'desc: 后端负责人, 管审核' in (home / 'memory' / '人-赵六.md').read_text(encoding='utf-8')
+    memory.build_index(home)
+    assert (home / 'memory' / 'MEMORY.md').read_text(encoding='utf-8') == text          # 再生成不变、不叠加

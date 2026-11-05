@@ -7,6 +7,7 @@ daemon 的调度循环每 15 秒调一次 tick: 到期的任务先记运行记�
 """
 import asyncio
 import json
+import threading
 import time
 from datetime import datetime
 
@@ -18,7 +19,7 @@ from .triggers import build_report_prompt, build_system_prompt
 
 ALERT_COOLDOWN = 6 * 3600
 BOOTSTRAP_BATCH = 8
-BOOTSTRAP_MAX = 40  # 没打开会话分类时, 最多看本人发言最多的这么多个会话
+BOOTSTRAP_MAX = 40  # 初始化记忆最多看这么多个会话(按消息多少或本人发言多少排)
 
 
 def bootstrap_chats(storage, cfg: dict, owner_id: str) -> list:
@@ -27,11 +28,15 @@ def bootstrap_chats(storage, cfg: dict, owner_id: str) -> list:
     cs = groups.ChatStore(storage)
     if cfg.get('chat_groups'):
         rows = [r for r in cs.view() if r['attention'] == 'focus' and not r['private']]
-        return [r['chat_id'] for r in sorted(rows, key=lambda r: -(r['msgs'] or 0))]
+        return [r['chat_id'] for r in sorted(rows, key=lambda r: -(r['msgs'] or 0))][:BOOTSTRAP_MAX]
     since = int(time.time() - int(cfg.get('backfill_days') or 30) * 86400)
     stats = cs.stats(owner_id, storage.owner_name(owner_id), since)
     rows = sorted((cid for cid, s in stats.items() if s['owner_msgs']), key=lambda cid: -stats[cid]['owner_msgs'])
     return rows[:BOOTSTRAP_MAX]
+
+
+class Paused(Exception):
+    """停服务时本地任务主动停下: 记为暂停, 不算失败、不告警。"""
 
 
 class Maintenance:
@@ -39,6 +44,10 @@ class Maintenance:
         self.d = daemon
         self.store = jobs.JobStore(daemon.storage)
         self._tasks = set()
+        self.stopping = threading.Event()  # 停服务: 让线程里跑的回填在下一批之前停下
+
+    def stop(self):
+        self.stopping.set()
 
     def recover(self, legacy_state: dict = None):
         n = self.store.recover()
@@ -93,8 +102,11 @@ class Maintenance:
         """一次性任务现在该不该跑, 该跑时返回时段名。"""
         if job.name == 'backfill':
             done = self.store.get_state('backfill').get('done')
-            # 等启动后第一轮补收结束: 那一轮给最近的会话记好了核对位置, 回填只拉位置以下的
-            return None if done or getattr(self.d, '_feed_since', None) is None else 'once'
+            # 等启动后第一轮补收结束: 那一轮给最近的会话记好了核对位置, 回填只拉位置以下的。
+            # 按天给时段: 某天重试用完, 第二天从断点接着回填, 不会永远停住
+            if done or getattr(self.d, '_feed_since', None) is None:
+                return None
+            return 'once-' + datetime.now().strftime('%Y-%m-%d')
         if job.name == 'bootstrap':
             bf, bs = self.store.get_state('backfill'), self.store.get_state('bootstrap')
             if not bf.get('done') or bs.get('done'):
@@ -107,12 +119,25 @@ class Maintenance:
                 bs['chats'] = bootstrap_chats(self.d.storage, self.d.cfg, str(self.d.auth.user_id))
                 bs['next'] = 0
                 self.store.put_state('bootstrap', bs)
+            while bs['next'] * BOOTSTRAP_BATCH < len(bs['chats']) and self._batch_gave_up(f"batch-{bs['next'] + 1}"):
+                # 这一批重试用完还没成功: 跳过它接着下一批, 免得初始化记忆永远停在这里
+                logger.warning(f"初始化记忆第 {bs['next'] + 1} 批重试用完, 跳过")
+                bs.setdefault('skipped', []).append(bs['next'] + 1)
+                bs['next'] += 1
+                self.store.put_state('bootstrap', bs)
             if bs['next'] * BOOTSTRAP_BATCH >= len(bs['chats']):
                 bs['done'] = True
                 self.store.put_state('bootstrap', bs)
                 return None
             return f"batch-{bs['next'] + 1}"
         return None
+
+    def _batch_gave_up(self, key: str) -> bool:
+        """这一批不会再跑了: 本人 /stop 打断(记为跳过), 或者重试用完还没成功。"""
+        runs = [r for r in self.store.runs('bootstrap', key) if r.status != jobs.PAUSED]
+        if any(r.status in jobs.ACTIVE or r.status == 'ok' for r in runs):
+            return False
+        return any(r.status == 'skipped' for r in runs) or len(runs) >= jobs.get('bootstrap').max_attempts
 
     async def request(self, name: str) -> str:
         """手动立即运行(网页"立即运行"、larkx jobs run)。"""
@@ -158,8 +183,10 @@ class Maintenance:
         """简报这一轮结束: 查审计里有没有真的发到本人私聊; 没发出就由代码直接发数据版兜底。"""
         sent = any(a.action == 'send' and a.ok and a.chat_id == ev.chat_id
                    for a in self.d.storage.actions_for_turns([run.ref]))
-        if sent and result is not None and not result.is_error:
-            self.store.finish(run.id, result.text or '已发出')
+        if sent:  # 已经发到本人私聊就算完成; 这一轮之后报错或中断也不再补发, 免得发两遍
+            ok = result is not None and not result.is_error
+            self.store.finish(run.id, (result.text if ok and result.text else '已发出')
+                              + ('' if ok else '(发出后这一轮没有正常结束)'))
             return
         data = digest.briefing_data(self.d.storage, str(self.d.auth.user_id), client=self.d.client,
                                     home=self.d.cfg.get('agent_home'), cfg=self.d.cfg)
@@ -178,6 +205,9 @@ class Maintenance:
             logger.info(f'例行任务「{job.title}」完成: {summary}')
             if job.name == 'backfill' and self.store.get_state('backfill').get('done') and self.d.cfg.get('chat_groups'):
                 await self.start(jobs.get('profile'), 'after-backfill', 'chain')  # 接着画像, 然后初始化记忆
+        except Paused as e:
+            self.store._set(run.id, status=jobs.PAUSED, finished_at=datetime.now(), summary=str(e))
+            logger.info(f'例行任务「{job.title}」暂停: {e}')
         except Exception as e:
             logger.exception(f'例行任务「{job.title}」失败')
             self._failed(run, repr(e))
@@ -205,7 +235,9 @@ class Maintenance:
             self.store.put_state('backfill', st)
         bf = backfill.Backfill(self.d.client, self.d.storage, str(self.d.auth.user_id),
                                int(self.d.cfg.get('backfill_days') or 30), saved=saved, progress=progress)
-        res = bf.run()
+        res = bf.run(should_stop=self.stopping.is_set)
+        if res.get('stopped'):
+            raise Paused(backfill.summary(res))
         if not res['done']:
             raise RuntimeError(backfill.summary(res))
         return backfill.summary(res)

@@ -184,8 +184,14 @@ def check_backfill(cfg, storage=None):
         return _check('历史回填', WARN, f'还没做: daemon 启动后会自动回填最近 {cfg["backfill_days"]} 天', 'larkx service status 确认服务在运行')
     progress = f"{bf.get('chats_done', 0)}/{len(bf.get('order') or [])} 个会话, {bf.get('messages', 0)} 条"
     if not bf.get('done'):
+        last = store.last('backfill')
+        if last and last.status == 'failed' and len([r for r in store.runs('backfill', last.slot)
+                                                     if r.status != jobs.PAUSED]) >= jobs.get('backfill').max_attempts:
+            return _check('历史回填', WARN, f'停在 {progress}: 今天重试用完({(last.error or "")[:80]})',
+                          '明天会从断点接着回填; 想马上继续就运行 larkx backfill')
         return _check('历史回填', OK, f'进行中: {progress}')
-    memo = '记忆已初始化' if bs.get('done') else (
+    skipped = f"; 跳过了第 {'、'.join(map(str, bs['skipped']))} 批" if bs.get('skipped') else ''
+    memo = ('记忆已初始化' + skipped) if bs.get('done') else (
         f"初始化记忆中: {bs.get('next', 0)}/{-(-len(bs.get('chats') or []) // 8) or '?'} 批" if bs else '等待初始化记忆')
     return _check('历史回填', OK, f'已完成: {progress}; {memo}')
 

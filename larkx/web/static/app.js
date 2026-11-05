@@ -108,7 +108,7 @@ const chatLabel = (id, name) => name || chatNames[id] || (id ? `会话 ${id}` : 
 
 const KIND = { message: '消息', task: '任务', say: '终端指令', system: '维护', report: '汇报', web: '网页' };
 const ATT = { focus: '重点关注', light: '简单关注', archive: '只存不看' };
-const RUN = { queued: '排队', running: '运行中', ok: '完成', failed: '失败', skipped: '跳过', interrupted: '中断' };
+const RUN = { queued: '排队', running: '运行中', ok: '完成', failed: '失败', skipped: '跳过', interrupted: '中断', paused: '暂停' };
 const runTag = r => r && r.status ? h('span', { class: 'tag' + (['failed', 'interrupted'].includes(r.status) ? ' bad' : '') }, RUN[r.status] || r.status) : h('span', { class: 'muted' }, '还没跑过');
 // daemon: 不经过数字人、由 daemon 直接做的(没权限的人想唤起时的自动回复、触发时在那条消息上加的表情回复)
 const ACTOR = { agent: '数字人', daemon: '自动回复' };
