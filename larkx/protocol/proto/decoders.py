@@ -111,13 +111,30 @@ def extract_rich_text(rich_text_dict):
                     text += '[@]'
                 return
             if tag == A:
-                lp = E.LinkProperty()
+                # 现在的链接属性是 AnchorProperty(field1 href/field2 content/field9 isCustom/field10 scene);
+                # 老消息用 LinkProperty(field1 url/field2 iosUrl)。两种 field1 都是 string, Anchor 能直接读出
+                # href, 但老消息的 iosUrl 会被误读成 content, 所以只在有自定义链接标记(isCustom/scene)时
+                # 才把 content 当自定义文字, 否则只输出 url。Anchor 读不到时再回退 LinkProperty。
+                ap = E.AnchorProperty()
                 try:
-                    lp.ParseFromString(prop)
-                    if lp.url:
-                        text += lp.url
+                    ap.ParseFromString(prop)
                 except Exception:
-                    pass
+                    ap = None
+                href = ap.href if ap is not None else ''
+                if not href:
+                    lp = E.LinkProperty()
+                    try:
+                        lp.ParseFromString(prop)
+                        href = lp.url or ''
+                    except Exception:
+                        href = ''
+                if href:
+                    content = ap.content if ap is not None else ''
+                    if (ap is not None and (ap.isCustom or ap.scene)
+                            and content and content != href):
+                        text += f'{content}({href})'
+                    else:
+                        text += href
                 return
             if tag == CODE_BLOCK:
                 cb = E.CodeBlockProperty()

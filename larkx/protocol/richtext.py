@@ -45,46 +45,91 @@ HEADING_RE = re.compile(r'^(#{1,6})\s+(.*)$')
 QUOTE_RE = re.compile(r'^>\s?(.*)$')
 UL_ITEM_RE = re.compile(r'^\s*[-*+]\s+(.*)$')
 OL_ITEM_RE = re.compile(r'^\s*(\d{1,9})[.)]\s+(.*)$')
-# 行内: **bold** __bold__ *italic* _italic_ `code` [text](url) 裸链接。
-# 标记内侧不能是空白("2 * 3 * 4" 不是斜体); 下划线的外侧不能紧挨字母、数字或汉字(\w), 单词中间的 _ 不算标记
+# 行内: ***粗斜*** **bold** __bold__ *italic* _italic_ `code` [text](url) 裸链接。
+# 标记内侧不能是空白("2 * 3 * 4" 不是斜体); 下划线的外侧不能紧挨字母、数字或汉字(\w), 单词中间的 _ 不算标记。
+# *斜体* 内部允许再出现 *(这样 *a **b** c* 能嵌套); _斜体_ 内部不允许 _, 否则 _a_b_ 会被误判。
+# 协议名大小写不敏感(只对 https? 局部开 (?i:), 发出的 href 保留原文大小写)。不能整条正则开 re.I:
+# 忽略大小写时否定字符类 [^...\x80-\U0010ffff] 会连带排除大小写变体落在非 ASCII 区的 i/k/s(İ ı K ſ),
+# 裸链接会在第一个 i/k/s 处被截断。
 INLINE = re.compile(
-    r'(\*\*(?=\S).+?(?<=\S)\*\*|(?<!\w)__(?=\S).+?(?<=\S)__(?!\w)'
-    r'|(?<!\*)\*(?![*\s])[^*\n]*?(?<=\S)\*(?!\*)|(?<![\w_])_(?![_\s])[^_\n]*?(?<=\S)_(?![\w_])'
-    r'|`.+?`|\[[^]\n]{1,400}\]\(https?://[^\s)]{1,4000}\)|https?://[^\s\x00-\x1f\x7f<>"]{1,4000})'
+    r'(\*\*\*(?=\S).+?(?<=\S)\*\*\*'
+    r'|\*\*(?=\S).+?(?<=\S)\*\*|(?<!\w)__(?=\S).+?(?<=\S)__(?!\w)'
+    r'|(?<!\*)\*(?![*\s]).+?(?<![\s*])\*(?!\*)|(?<![\w_])_(?![_\s])[^_\n]*?(?<=\S)_(?![\w_])'
+    r'|`.+?`|\[[^]\n]{1,400}\]\((?i:https?)://(?:[^\s()]|\([^\s()]*\)){1,4000}\)'
+    r'|(?i:https?)://[^\s\x00-\x1f\x7f\x80-\U0010ffff<>"]{1,4000})'
 )
 LINK_MD = re.compile(r'^\[([^]]*)\]\((.*)\)$')
+# 裸链接结尾不算进 URL 的标点: GFM autolink 的 ?!.,:*_~, 加上 ; 和引号。= # - + & 等在结尾也常是 URL 的
+# 一部分(签名 ==、锚点 #), 不剥。) ] } 单独按括号配对处理。中文等非 ASCII 字符在 INLINE 字符类里就不进链接。
+_TRAILING_PUNCT = set("?!.,:;*_~'\"")
+_CLOSE_BRACKETS = {')': '(', ']': '[', '}': '{'}
 
 
-def _inline_tokens(text: str):
-    """把一行文本切成行内片段: (kind, 文字, url), kind 是 text / bold / italic / link / url。
-    re.split 带一个捕获组, 奇数下标是匹配到的标记, 偶数下标是夹在中间的普通文字(哪怕它恰好以 _ 开头结尾)。"""
+def _trim_bare_url(url: str) -> str:
+    """按 GFM autolink 规则剥掉裸链接结尾不属于 URL 的部分:
+
+    - 结尾连续的句读/引号(见 _TRAILING_PUNCT, 含结尾的 .)逐个剥掉, 这些标点在 URL 中间可以保留;
+    - 结尾的 ) ] } 只有在 URL 里对应的左括号更少时才剥(括号配对, 维基百科这类 URL 里成对的括号保留)。
+    """
+    while url:
+        c = url[-1]
+        if c in _TRAILING_PUNCT:
+            url = url[:-1]
+        elif c in _CLOSE_BRACKETS and url.count(c) > url.count(_CLOSE_BRACKETS[c]):
+            url = url[:-1]
+        else:
+            break
+    return url
+
+
+def _merge_styles(styles):
+    """(({'fontWeight': 'bold'}, ...)) 叠成一个 style dict(键互不冲突)。"""
+    merged = {}
+    for st in styles or ():
+        merged.update(st)
+    return merged
+
+
+def _inline_tokens(text: str, styles=()):
+    """把一行文本切成行内片段: (kind, 文字, url, 样式), kind 是 text / link / url(样式挂在 bold/italic 递归栈上)。
+    re.split 带一个捕获组, 奇数下标是匹配到的标记, 偶数下标是夹在中间的普通文字(哪怕它恰好以 _ 开头结尾)。
+    bold/italic/粗斜体的内部文本递归再解析一遍, 所以 **[文字](url)**、*a **b** c* 这类嵌套能展开,
+    子片段带着叠加后的样式(飞书客户端的 A 叶子本身也可以带 fontWeight 样式)。"""
     for n, part in enumerate(INLINE.split(text or '')):
         if not part:
             continue
         if n % 2 == 0:
-            yield 'text', part, ''
+            yield 'text', part, '', styles
+        elif len(part) > 6 and part[:3] == part[-3:] == '***':
+            # 只有两头都是 *** 才是粗斜体; "***x**" 这种是加粗分支匹配到的(内部是 "*x"), 按加粗处理
+            yield from _inline_tokens(part[3:-3], styles + (BOLD, ITALIC))
         elif part[:2] in ('**', '__'):
-            yield 'bold', part[2:-2], ''
+            yield from _inline_tokens(part[2:-2], styles + (BOLD,))
         elif part[0] in '*_':
-            yield 'italic', part[1:-1], ''
+            yield from _inline_tokens(part[1:-1], styles + (ITALIC,))
         elif part[0] == '`':
             # 行内代码 IM 不支持, 只保留文字
-            yield 'text', part[1:-1], ''
+            yield 'text', part[1:-1], '', styles
         elif part[0] == '[':
             m = LINK_MD.match(part)
             if m and m.group(1).strip():
-                yield 'link', m.group(1), m.group(2)
+                yield 'link', m.group(1), m.group(2), styles
             elif m:
-                yield 'url', m.group(2), m.group(2)
+                yield 'url', m.group(2), m.group(2), styles
             else:
-                yield 'text', part, ''
+                yield 'text', part, '', styles
         else:
-            yield 'url', part, part
+            # 裸链接: 正则只按字符边界切, 结尾的句读标点和多余右括号在这里剥掉, 剥下来的尾巴还给普通文字
+            url = _trim_bare_url(part)
+            yield 'url', url, url, styles
+            if len(part) > len(url):
+                yield 'text', part[len(url):], '', styles
 
 
 def _plain_inline(text: str) -> str:
     """行内 markdown 去掉标记后的纯文字([文字](url) 保留文字和 url)。"""
-    return ''.join(f'{s} {url}' if kind == 'link' else s for kind, s, url in _inline_tokens(text))
+    return ''.join(f'{s} {url}' if kind == 'link' else s
+                   for kind, s, url, _styles in _inline_tokens(text))
 
 
 def to_plain_text(markdown: str) -> str:
@@ -171,16 +216,17 @@ def build_rich_text(rich, markdown: str):
         return E.TextProperty(content=s).SerializeToString()
 
     def add_inline(parent_children, text):
-        """把一行文本的行内 markdown 展开成 TEXT(加粗、斜体是带 style 的 TEXT)和 A 叶子, 追加到 parent_children。"""
-        for kind, s, url in _inline_tokens(text):
+        """把一行文本的行内 markdown 展开成 TEXT(加粗、斜体是带 style 的 TEXT)和 A 叶子, 追加到 parent_children。
+        bold/italic 里的链接也给 A 叶子挂上叠加的样式(和飞书客户端自己发的结构一致)。"""
+        for kind, s, url, styles in _inline_tokens(text):
+            style = _merge_styles(styles) or None
             if kind == 'url':
                 prop = E.AnchorProperty(href=url, content=url, textContent=url)
-                parent_children.append(tree.node(A, prop.SerializeToString()))
+                parent_children.append(tree.node(A, prop.SerializeToString(), style=style))
             elif kind == 'link':
                 prop = E.AnchorProperty(href=url, content=s, isCustom=True, scene=ANCHOR_CUSTOM_EDIT)
-                parent_children.append(tree.node(A, prop.SerializeToString()))
+                parent_children.append(tree.node(A, prop.SerializeToString(), style=style))
             else:
-                style = BOLD if kind == 'bold' else ITALIC if kind == 'italic' else None
                 parent_children.append(tree.node(TEXT, text_prop(s), style=style))
             tree.inner.append(s)
 
