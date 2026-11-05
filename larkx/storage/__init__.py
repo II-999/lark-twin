@@ -31,10 +31,15 @@ def _add_columns(engine):
         if not insp.has_table(table):
             continue
         have = {c['name'] for c in insp.get_columns(table)}
-        with engine.begin() as conn:
-            for name, typ in cols:
-                if name not in have:
+        for name, typ in cols:
+            if name in have:
+                continue
+            try:
+                with engine.begin() as conn:
                     conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {typ}'))
+            except Exception as e:  # daemon 和 CLI 同时第一次启动: 另一边刚加上了
+                if 'duplicate' not in str(e).lower():
+                    raise
 
 
 def mentioned(content_data: str, content: str, user_id: str, name: str = '') -> bool:

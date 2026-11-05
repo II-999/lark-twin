@@ -387,3 +387,29 @@ def test_mentions_name_case_insensitive(tmp_path):
     st.save_message({'msg_id': 'a', 'chat_id': 'g1', 'chat_type': 2, 'from_id': '300', 'content': '@alice 看下',
                      'create_time': t - 10}, sender_name='李四')
     assert [r['msg_id'] for r in st.mentions('100', 'Alice', t - 3600)] == ['a']
+
+
+def test_added_column_race_ignored(tmp_path, monkeypatch):
+    """daemon 和 CLI 同时第一次启动: 查的时候没有、加的时候另一边已经加上了。"""
+    import sqlite3
+    from sqlalchemy import inspect as sa_inspect
+    from larkx import storage as storage_mod
+    db = tmp_path / 'race.db'
+    Storage(f'sqlite:///{db}')
+    con = sqlite3.connect(db)
+    con.execute('ALTER TABLE chat_profiles DROP COLUMN suggested_at')
+    con.commit()
+    con.close()
+    real = sa_inspect
+
+    def stale(engine):                                   # 让"查列"看到旧表, 但先由"另一边"加上列
+        i = real(engine)
+        cols = i.get_columns('chat_profiles')
+        c2 = sqlite3.connect(db)
+        c2.execute('ALTER TABLE chat_profiles ADD COLUMN suggested_at DATETIME')
+        c2.commit()
+        c2.close()
+        i.get_columns = lambda t: cols
+        return i
+    monkeypatch.setattr('sqlalchemy.inspect', stale)
+    Storage(f'sqlite:///{db}')                                                       # 不报 duplicate column

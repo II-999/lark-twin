@@ -254,3 +254,9 @@ def test_at_me_ignores_forwarded_records(st):
     _msg(st, 'a1', 'g1', '200', name='项目群', data={'_larkx_mention_ids': [OWNER]})
     stats = groups.ChatStore(st).stats(OWNER, '', 0)
     assert stats['g1']['at_me'] == 1 and stats['g1']['msgs'] == 2
+
+
+def test_owner_own_chat_marked_kept(st):
+    groups.ChatStore(st).save_profile('self', OWNER, chat_type=1, peer_id=OWNER)
+    r = groups.ChatStore(st).view(['self'])[0]
+    assert r['attention'] == 'archive' and r['kept'] and '不清理' in r['reason']

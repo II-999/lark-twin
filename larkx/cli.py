@@ -382,7 +382,7 @@ def cmd_config(args):
 def _chat_tags(r: dict) -> str:
     tags = [r['attention_name'] + ('' if r['attention_source'] in ('跟分类', '单独设置') else '·建议')]
     tags += (['私人'] if r['private'] else []) + (['免打扰'] if r['feishu_muted'] else []) + \
-        (['置顶'] if r['feishu_pinned'] else [])
+        (['置顶'] if r['feishu_pinned'] else []) + (['不清理'] if r.get('kept') else [])
     return ' '.join(f'[{t}]' for t in tags)
 
 
