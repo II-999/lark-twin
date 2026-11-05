@@ -64,6 +64,8 @@ class Maintenance:
         job = jobs.get(name)
         if not job:
             return f'没有例行任务 {name}, 可用: {", ".join(j.name for j in jobs.JOBS)}'
+        if job.when(self.d.cfg) is None:
+            return f'「{job.title}」没有打开, 不能运行'
         run = await self.start(job, f'manual-{int(datetime.now().timestamp())}', 'manual')
         return f'已开始「{job.title}」#{run.id}'
 
@@ -72,15 +74,24 @@ class Maintenance:
     def started(self, run_id: int):
         self.store.start(run_id)
 
-    def on_turn_done(self, ev, result):
+    def on_turn_done(self, ev, result, stopped_by_owner: bool = False):
         run = self.store.get(ev.run_id)
         if not run:
+            return
+        if stopped_by_owner:  # 本人 /stop: 不算失败, 不告警, 这个时段也不再自动重跑
+            self.store._set(run.id, status='skipped', finished_at=datetime.now(), summary='本人停止了这一轮, 这一次不再自动重跑')
             return
         if result is not None and not result.is_error:
             self.store.finish(run.id, result.text or '')
             return
         err = ('agent 会话中断, 结果未知' if result is None else f'{result.subtype}: {result.text or ""}')
         self._failed(run, err)
+
+    def turn_error(self, ev, err: str):
+        """这一轮抛了会话中断以外的异常。"""
+        run = self.store.get(ev.run_id)
+        if run and run.status in jobs.ACTIVE:
+            self._failed(run, err)
 
     async def _run_local(self, job: jobs.Job, run):
         self.store.start(run.id)
@@ -95,7 +106,8 @@ class Maintenance:
     # ---- 本地任务 ----
 
     def _job_profile(self, run) -> str:
-        res = groups.profile_all(self.d.client, self.d.storage, str(self.d.auth.user_id))
+        res = groups.profile_all(self.d.client, self.d.storage, str(self.d.auth.user_id),
+                                 action_words=groups.action_words(self.d.cfg))
         if res['new']:
             st = self.store.get_state('profile')
             st['new_chats'] = sorted(set(st.get('new_chats', [])) | set(res['new']))
@@ -103,10 +115,7 @@ class Maintenance:
         return f"{res['chats']} 个会话; 新会话 {len(res['new'])} 个; 建议有变化 {res['changed']} 个"
 
     def _job_prune(self, run) -> str:
-        st = self.store.get_state('prune')
-        res = retention.run(self.d.cfg, self.d.storage, state=st)
-        self.store.put_state('prune', st)
-        return retention.summary(res)
+        return retention.summary(retention.run(self.d.cfg, self.d.storage))  # 不整理数据库文件, 见 retention.run
 
     def _failed(self, run, err: str):
         self.store.fail(run.id, err)

@@ -186,10 +186,11 @@ def test_groups_off_keeps_existing_behavior(st, monkeypatch, capsys):
                                             json=True)) == 0
     row = json.loads(capsys.readouterr().out)[0]
     assert {'chat_id', 'name', 'chat_type', 'updated_at'} <= set(row) and len(row['updated_at']) > 16
-    assert prompts.review(dict(DEFAULTS), st, datetime.now(), OWNER).startswith(prompts.BASIC_REVIEW_PROMPT)
+    assert prompts.review(dict(DEFAULTS), st, datetime.now(), OWNER) == prompts.BASIC_REVIEW_PROMPT
     assert jobs.get('profile').when(dict(DEFAULTS)) is None and jobs.get('prune').when(dict(DEFAULTS)) is None
     assert jobs.get('profile').when(dict(DEFAULTS, chat_groups=True)) is not None
-    assert jobs.get('prune').when(dict(DEFAULTS, retention_archive_days=30)) is not None
+    assert jobs.get('prune').when(dict(DEFAULTS, retention_archive_days=30)) is None            # 要先开分类
+    assert jobs.get('prune').when(dict(DEFAULTS, retention_archive_days=30, chat_groups=True)) is not None
 def test_failed_bot_lookup_stays_unknown(st):
     class Client:
         _bots = {}
@@ -202,3 +203,54 @@ def test_failed_bot_lookup_stays_unknown(st):
     _msg(st, 'm1', 'p9', '900', chat_type=1)
     groups.profile_all(Client(), st, OWNER)
     assert groups.ChatStore(st).profile('p9').peer_bot == -1
+
+
+def test_profile_many_chats_keeps_old_profiles(st):
+    """前面查过私聊机器人以后, 后面的会话照样拿得到旧画像(上次活跃时间、查过的机器人结果、名字)。"""
+    class Client:
+        def __init__(self, bots):
+            self._bots, self.asked = bots, []
+        def api(self, name, data=None):
+            if name == 'feed.PullShortcutsRequest':
+                return {'shortcuts': [{'id': 'g2', 'type': 1}], 'hasMore': False}
+            return {}
+        def is_bot(self, uid):
+            self.asked.append(uid)
+            return uid in self._bots
+        def get_user_name(self, uid, cid):
+            return ''
+    for cid, sender, kind in (('p1', '901', 1), ('g1', '200', 2), ('p2', '902', 1), ('g2', '200', 2)):
+        _msg(st, f'm-{cid}', cid, sender, chat_type=kind, name='' if kind == 1 else f'群{cid}')
+    cs = groups.ChatStore(st)
+    cs.save_profile('p2', OWNER, peer_id='902', peer_bot=1, chat_type=1, name='老机器人', last_at=123)
+    cs.save_profile('g2', OWNER, chat_type=2, name='群g2', last_at=456)
+    c = Client({'901'})
+    groups.profile_all(c, st, OWNER)
+    assert c.asked == ['901']                                            # 查过的 p2 不再查
+    p2, g2 = cs.profile('p2'), cs.profile('g2')
+    assert (p2.peer_bot, p2.name) == (1, '老机器人') and cs.profile('p1').peer_bot == 1
+    assert g2.last_at > 0 and g2.feishu_pinned == 1
+    groups.profile_all(type('NoCache', (Client,), {})(set()), st, OWNER)   # client 没有 _bots 也不报错
+
+
+def test_pins_unknown_keeps_previous(st):
+    class Client:
+        def api(self, name, data=None):
+            return {'shortcuts': [{'id': 'g1', 'type': 1}], 'hasMore': True}   # 怎么都拿不全
+    assert groups.feishu_pins(Client()) is None
+
+
+def test_bot_action_keywords_configurable(st):
+    cs = groups.ChatStore(st, groups.action_words({'bot_action_keywords': '工单, 发布单'}))
+    cs.save_profile('b1', OWNER, chat_type=1, peer_id='9', peer_bot=1, name='发布单助手')
+    assert cs.profile('b1').suggested_attention == 'light'
+    groups.ChatStore(st).save_profile('b2', OWNER, chat_type=1, peer_id='9', peer_bot=1, name='发布单助手')
+    assert groups.ChatStore(st).profile('b2').suggested_attention == 'archive'
+
+
+def test_at_me_ignores_forwarded_records(st):
+    """合并转发的记录里带着本人 id(fromId), 不算 @ 本人。"""
+    _msg(st, 'f1', 'g1', '200', name='项目群', data={'forward': [{'fromId': OWNER, 'text': '之前说的'}]})
+    _msg(st, 'a1', 'g1', '200', name='项目群', data={'_larkx_mention_ids': [OWNER]})
+    stats = groups.ChatStore(st).stats(OWNER, '', 0)
+    assert stats['g1']['at_me'] == 1 and stats['g1']['msgs'] == 2

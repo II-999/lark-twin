@@ -123,7 +123,7 @@ larkx rule delete 1
 | `LARKX_REPLY_SIGNATURE` | 每条回复末尾的署名，比如 `🤖 lark-twin · 数字分身`，会和正文空一行、前面加"——" |
 | `LARKX_DENY_REPLY` / `LARKX_DENY_REPLY_COOLDOWN` | 没权限的人发 `/ai` 时自动回的一句话（`{owner}` 换成你的名字，设成空关掉）· 同一会话同一人多少秒内只回一次，默认 600 |
 | `LARKX_CHAT_GROUPS` | 会话分类与关注度，默认关。打开后每天给会话画像，每日回顾只看重点和简单关注的会话 |
-| `LARKX_RETENTION_ARCHIVE_DAYS` / `LARKX_RETENTION_LIGHT_DAYS` | 只存不看、简单关注的会话消息保留天数，默认 0 一直保留 |
+| `LARKX_RETENTION_ARCHIVE_DAYS` / `LARKX_RETENTION_LIGHT_DAYS` | 只存不看、简单关注的会话消息保留天数，默认 0 一直保留；要打开会话分类才生效，没画像的会话不删 |
 | `LARKX_ALERT_CMD` | 飞书登录失效时的备用告警命令，比如用 lark-cli 机器人身份发给你 |
 | `LARKX_WEB_URL` | 网页控制台的对外地址（Nginx 入口），用来生成登录链接 |
 

@@ -158,8 +158,8 @@ def check_jobs(cfg, storage=None):
         ran += 1
         if last.status in ('failed', 'interrupted'):
             bad.append(f'{job.title}({jobs.STATUS_NAMES[last.status]})')
-        if getattr(job, 'once', False) or job.when(cfg)[2] is not None:
-            continue  # 一次性任务和每周任务不按 36 小时判
+        if job.when(cfg)[2] is not None:
+            continue  # 每周任务不按 36 小时判
         recent = datetime.now() - timedelta(hours=36)
         first = store.log(job.name, limit=1000)[-1]
         done = store.last(job.name, status=('ok', 'skipped'))

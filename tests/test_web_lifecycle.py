@@ -30,7 +30,9 @@ def test_groups_and_chat_assignment(client):
     assert client.post('/api/groups', json={'name': 'X'}).status_code == 403          # 缺请求头
     gs = client.post('/api/groups', json={'name': '项目A', 'attention': '重点关注'}, headers=H).json()
     gid = gs['groups'][0]['id']
-    rows = {r['chat_id']: r for r in client.get('/api/chats').json()}
+    old = client.get('/api/chats').json()                                              # 原来的接口不变
+    assert set(old[0]) == {'chat_id', 'name', 'chat_type', 'updated_at'} and len(old[0]['updated_at']) > 19
+    rows = {r['chat_id']: r for r in client.get('/api/chat-profiles').json()}
     assert rows['12']['attention'] == 'archive' and rows['12']['attention_source'] == '建议'
     r = client.put('/api/chats/11/group', json={'group_id': gid}, headers=H).json()
     assert (r['group'], r['attention'], r['confirmed']) == ('项目A', 'focus', True)
@@ -59,3 +61,10 @@ def test_overview_lifecycle(client):
     ov = client.get('/api/overview').json()['lifecycle']
     assert not ov['chat_groups'] and ov['attention'] == {} and {j['name'] for j in ov['jobs']} >= {'review'}
     assert client.get('/api/groups').json()['enabled'] is False
+
+
+def test_disabled_job_cannot_run(tmp_path, monkeypatch, fake_client):
+    import asyncio
+    from tests.test_reliability import _daemon
+    obj = _daemon(tmp_path, fake_client, monkeypatch)
+    assert '没有打开' in asyncio.run(obj.control('job:prune')) and obj.inbox.qsize() == 0

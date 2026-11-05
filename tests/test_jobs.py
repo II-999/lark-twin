@@ -176,14 +176,60 @@ def test_doctor_jobs(tmp_path):
     assert doctor.check_jobs(cfg(), st)['level'] == 'warn'
 
 
-def test_doctor_jobs_not_overdue_when_new_or_once(tmp_path):
+def test_doctor_jobs_not_overdue_when_new(tmp_path):
     from datetime import timedelta as td
     from larkx import doctor
     st = Storage(f'sqlite:///{tmp_path}/n.db')
     store = jobs.JobStore(st)
-    store.create('briefing', 'd1', status='skipped')                     # 刚装好, 今天错过了时间
-    store.start(store.create('backfill', 'once').id)                     # 一次性任务正在跑
+    store.create('consolidate', 'd1', status='skipped')                  # 刚装好, 今天错过了时间
     assert doctor.check_jobs(cfg(), st)['level'] == 'ok'
     old = store.create('review', 'old', status='ok')
     store._set(old.id, created_at=datetime.now() - td(days=3))
     assert '每日回顾' in doctor.check_jobs(cfg(), st)['detail']          # 3 天前跑过、之后再没完成
+
+
+def test_prune_waits_for_profile(store):
+    c = cfg(chat_groups=True, retention_archive_days=30, memory_review_hour=4)
+    prune, at = jobs.get('prune'), datetime(2026, 11, 2, 6, 0)          # 停机后 6 点才起来: 画像、清理都到点了
+    assert store.due(jobs.get('profile'), c, at) == ('run', '2026-11-02', 1)
+    assert store.due(prune, c, at) is None                              # 画像还没跑
+    run = store.create('profile', '2026-11-02')
+    assert store.due(prune, c, at) is None                              # 在跑
+    store.fail(run.id, 'x')
+    store._set(run.id, finished_at=at)
+    assert store.due(prune, c, at) is None                              # 等重试
+    store.finish(store.create('profile', '2026-11-02', attempt=2).id)
+    assert store.due(prune, c, at) == ('run', '2026-11-02', 1)
+
+
+def test_prune_after_profile_gives_up(store):
+    c, at = cfg(chat_groups=True, retention_archive_days=30), datetime(2026, 11, 2, 9, 0)
+    for i in (1, 2):                                                    # 画像两次都失败: 不再等, 照常清理(没画像的不删)
+        r = store.create('profile', '2026-11-02', attempt=i)
+        store.fail(r.id, 'x')
+    assert store.due(jobs.get('prune'), c, at) == ('run', '2026-11-02', 1)
+
+
+def test_owner_stop_is_not_failure(tmp_path, monkeypatch, fake_client):
+    from larkx.agent import TurnResult
+    obj = _daemon(tmp_path, monkeypatch, fake_client)
+    asyncio.run(obj.maintenance.tick())
+    ev = obj.inbox.get_nowait()
+    obj.maintenance.on_turn_done(ev, TurnResult('interrupted', True, '', 1.0), stopped_by_owner=True)
+    run = obj.maintenance.store.get(ev.run_id)
+    assert run.status == 'skipped' and not [t for c, t in fake_client.sent if '失败' in t]
+    assert obj.maintenance.store.due(REVIEW, obj.cfg, datetime.now()) is None    # 这一时段不再重跑
+
+
+def test_turn_exception_marks_run_failed(tmp_path, monkeypatch, fake_client):
+    obj = _daemon(tmp_path, monkeypatch, fake_client)
+    asyncio.run(obj.maintenance.tick())
+    ev = obj.inbox.get_nowait()
+
+    async def boom(*a, **k):
+        raise ValueError('解析失败')
+    monkeypatch.setattr(obj, '_run_turn', boom)
+    with pytest.raises(ValueError):
+        asyncio.run(obj._handle(ev))
+    run = obj.maintenance.store.get(ev.run_id)
+    assert run.status == 'failed' and '解析失败' in run.error

@@ -32,14 +32,15 @@ def chat_line(r: dict) -> str:
     return f"- [{'/'.join(tags)}] {r['name'] or '(未命名)'} ({r['chat_id']}){group}: {', '.join(parts)}"
 
 
+# 没开会话分类时用的每日回顾: 和原来的一字不差
 BASIC_REVIEW_PROMPT = ('每日回顾: 用 larkx chats 和 larkx messages 看一下最近 24 小时本人参与的会话(重点是本人发的消息和找本人的消息), '
-                       '把值得长期记住的新信息整理进 memory/ 并更新索引; 发现记忆里过时或错误的内容就改掉, 已经办完的跟进删掉。'
-                       '本人答应过别人、还没安排的跟进, 用 larkx task add --at <时间> 安排提醒(会在本人私聊提醒)。')
+                       '把值得长期记住的新信息整理进 memory/ 并更新索引; 发现记忆里过时或错误的内容就改掉。'
+                       '答应过但还没安排的跟进, 用 larkx task add 补上。不要发飞书消息, 整理完直接结束。')
 
 
 def review(cfg: dict, storage, now, owner_id: str = '') -> str:
     if not cfg.get('chat_groups'):
-        return BASIC_REVIEW_PROMPT + MAINTENANCE_TAIL
+        return BASIC_REVIEW_PROMPT
     from .. import groups
     rows = groups.activity(storage, owner_id, int(now.timestamp() - 86400))
     shown = [r for r in rows if r['attention'] != 'archive']

@@ -460,8 +460,7 @@ def cmd_groups(args):
         for r in views:
             counts[r['group_id']] = counts.get(r['group_id'], 0) + 1
         rows = [{'id': g.id, 'name': g.name, 'attention': g.attention, 'attention_name': groups.ATTENTION[g.attention],
-                 'private': bool(g.private), 'keywords': json.loads(g.keywords or '[]'), 'chats': counts.get(g.id, 0),
-                 'feishu_label_id': g.feishu_label_id} for g in cs.groups()]
+                 'private': bool(g.private), 'keywords': json.loads(g.keywords or '[]'), 'chats': counts.get(g.id, 0)} for g in cs.groups()]
         unassigned = counts.get(0, 0)
         if args.json:
             _print_json({'groups': rows, 'unassigned': unassigned})
@@ -482,7 +481,7 @@ def cmd_groups(args):
         if args.action == 'profile':
             if inside_twin():
                 return _fail(args, '数字人不能刷新画像, 它每天会自动跑', code=3)
-            res = groups.profile_all(LarkClient(LarkAuth()), st, _owner_id())
+            res = groups.profile_all(LarkClient(LarkAuth()), st, _owner_id(), action_words=groups.action_words(load_config()))
             msg = f"已刷新 {res['chats']} 个会话的画像; 新会话 {len(res['new'])} 个, 建议有变化 {res['changed']} 个"
             return (_print_json({'ok': True, **res}) or 0) if args.json else (print(msg) or 0)
         if not args.targets:
@@ -965,6 +964,8 @@ def cmd_jobs(args):
 def cmd_prune(args):
     """清理旧数据: 不带 --days 时按关注度和保留期清理消息、整理旧记录; 带 --days 时只清 --chat 指定的会话。数字人不能用。"""
     from . import groups, jobs, retention
+    if inside_twin():  # 不只靠 LARKX_ACTOR 和 Claude 的命令拦截: Codex 后端没有那一层
+        return _fail(args, '数字人不能清理消息', code=3)
     st = Storage()
     if args.days is None:
         if args.chat:

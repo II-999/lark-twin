@@ -81,6 +81,7 @@ class Daemon:
         self._ws_gaps = []       # 最近的断线窗口 [(断开时间, 重新连上的时间)]
         self._catchup_wake = asyncio.Event()  # 长连接重新连上时叫醒补收循环, 马上补收一轮
         self._ack_tasks = set()  # 后台正在加的表情回复(留着引用, 免得任务被回收)
+        self._owner_stopped = False  # 本人 /stop 打断了当前这一轮
 
     def _banner(self):
         t = self.cfg.get('triggers') or {}
@@ -158,7 +159,7 @@ class Daemon:
         root_id = msg.get('anchor') or None
         if cmd == 'stop':
             n = self._drain_inbox()
-            stopped = await self.session.interrupt()
+            stopped = await self._owner_interrupt()
             if not rest:
                 parts = ['⏹ 已停止当前任务' if stopped else '⏹ 当前没有在处理的任务']
                 if n:
@@ -350,10 +351,17 @@ class Daemon:
                 logger.warning(f'处理控制请求失败: {e!r}')
             await asyncio.sleep(1)
 
+    async def _owner_interrupt(self) -> bool:
+        """本人要求停止当前这一轮(/stop、网页"停止")。记下来, 例行任务就不按失败告警和重跑。"""
+        stopped = await self.session.interrupt()
+        if stopped:
+            self._owner_stopped = True
+        return stopped
+
     async def control(self, action: str) -> str:
         if action == 'interrupt':
             n = self._drain_inbox()
-            stopped = await self.session.interrupt()
+            stopped = await self._owner_interrupt()
             return ('已停止当前任务' if stopped else '当前没有在处理的任务') + (f', 清空 {n} 条排队消息' if n else '')
         if action == 'clear':
             self._drain_inbox()
@@ -607,6 +615,7 @@ class Daemon:
         if is_event and not self.rule_store.start(ev.task_id):
             return  # paused/cancelled/duplicate queue item
         note, result = ev.note, None
+        self._owner_stopped = False
         for attempt in ((1,) if is_event else (1, 2)):
             prompt = ev.prompt
             if ev.kind == 'message':
@@ -619,7 +628,9 @@ class Daemon:
             except SessionCrashed as e:
                 logger.error(f'agent 会话中断({attempt}/2): {e}')
                 note = RETRY_NOTE
-            except Exception:
+            except Exception as e:
+                if ev.run_id:  # 不让运行记录一直停在"运行中"
+                    self.maintenance.turn_error(ev, repr(e))
                 if not is_event:
                     raise
                 logger.exception(f'事件任务 {ev.task_id} 异常，结果未知，不自动重试')
@@ -629,7 +640,7 @@ class Daemon:
         if ev.inbox_id:
             self.storage.inbox_set(ev.inbox_id, 'done' if result else 'failed')
         if ev.run_id:
-            self.maintenance.on_turn_done(ev, result)
+            self.maintenance.on_turn_done(ev, result, stopped_by_owner=getattr(self, '_owner_stopped', False))
         self._report(ev, result)
         if result:
             logger.info(f'[agent] {ev.kind} {ev.ref} 结束: {result.subtype} {result.duration_s:.1f}s 工具调用 {len(result.tools)} 次'

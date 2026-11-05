@@ -599,7 +599,11 @@ async function viewCommand() {
 
 async function viewChats() {
   page('会话', h('span', { class: 'muted' }, '分类和关注度决定分身怎么对待每个会话，改了立即生效'));
-  card(null, h('div', { class: 'rule' }, '重点关注：每条都看、提炼进记忆、简报里写进展；简单关注：只挑和你有关的（@你、提到你负责的事或分类关键词）；只存不看：存档可查，不进回顾和简报，按保留期清理。飞书里的免打扰不影响关注度。'));
+  if (!(await api('/api/groups')).enabled) {
+    card(null, h('p', { class: 'sec', style: 'margin:0' }, '会话分类没有打开（.env 里设 LARKX_CHAT_GROUPS=true 后重启服务）。打开后每天会给会话画像、建议分类，每日回顾按关注度只看重点和简单关注的会话。'));
+    return;
+  }
+  card(null, h('div', { class: 'rule' }, '重点关注：每日回顾每条都看、提炼进记忆；简单关注：只挑和你有关的（@你、提到你负责的事或分类关键词）；只存不看：存档可查，不进回顾，设了保留天数时按保留期清理。飞书里的免打扰不影响关注度。'));
   const groupsCard = card('分类');
   const q = h('input', { type: 'text', placeholder: '按名字筛选', style: 'flex:1;min-width:200px' });
   const filters = { all: '全部', focus: '重点关注', light: '简单关注', archive: '只存不看', suggested: '还没确认', muted: '飞书免打扰' };
@@ -611,15 +615,13 @@ async function viewChats() {
   function drawGroups() {
     const name = h('input', { type: 'text', placeholder: '新分类名', style: 'width:160px' });
     const att = attSelect('light');
-    if (!gs.enabled) groupsCard.before(h('section', { class: 'card' }, h('p', { class: 'sec', style: 'margin:0' },
-      '会话分类没有打开（.env 里 LARKX_CHAT_GROUPS=true 打开）：现在不会每天自动画像，每日回顾也不按关注度。这里手动建的分类先存着，打开后生效。')));
     put(groupsCard, h('h2', {}, '分类', h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, `未分类 ${gs.unassigned} 个（按画像建议生效）`)),
       gs.groups.length ? h('table', {}, h('tbody', {}, gs.groups.map(g => h('tr', {},
         h('td', {}, h('b', {}, g.name), g.private ? h('span', { class: 'tag', style: 'margin-left:6px' }, '私人') : null),
         h('td', {}, attSelect(g.attention, false, v => act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'PUT', body: { attention: v } }); load(); }, '已更新'))),
         h('td', { class: 'muted' }, `${g.chats} 个会话`), h('td', { class: 'muted' }, g.keywords.join('、')),
         h('td', {}, h('button', { class: 'btn small danger', onclick: () => confirm(`删除分类「${g.name}」? 分类里的会话变成未分类`) &&
-          act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'DELETE' }); load(); }, '已删除') }, '删除')))))) : h('div', { class: 'empty' }, '还没有分类。初始整理时分身会给出分类方案，也可以在这里自己建。'),
+          act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'DELETE' }); load(); }, '已删除') }, '删除')))))) : h('div', { class: 'empty' }, '还没有分类，可以在这里自己建。每天的会话画像会给出建议的分类，见下面的会话列表。'),
       h('div', { class: 'row', style: 'margin-top:10px' }, name, att, h('button', { class: 'btn small primary', onclick: () => name.value.trim() &&
         act(async () => { gs = await api('/api/groups', { method: 'POST', body: { name: name.value.trim(), attention: att.value } }); load(); }, '已建分类') }, '建分类')));
   }
@@ -654,7 +656,7 @@ async function viewChats() {
   }
 
   async function load() {
-    [rows, gs] = await Promise.all([api('/api/chats'), api('/api/groups')]);
+    [rows, gs] = await Promise.all([api('/api/chat-profiles'), api('/api/groups')]);
     drawGroups(); draw();
   }
   q.addEventListener('input', draw);
@@ -670,12 +672,12 @@ function jobsTable(jobs, refresh) {
     h('td', { class: 'muted' }, j.last && j.last.created_at ? `上次 ${fmt(j.last.created_at)}` : ''),
     h('td', { class: 'muted' }, j.next ? `下次 ${fmt(j.next)}` : ''),
     h('td', { class: 'muted', style: 'max-width:420px' }, j.last ? (j.last.error || j.last.summary || '').slice(0, 120) : ''),
-    h('td', {}, h('button', { class: 'btn small', onclick: () => confirm(`现在运行「${j.title}」?`) &&
-      act(async () => { const r = await api(`/api/jobs/${j.name}/run`, { method: 'POST' }); refresh && refresh(); return r; }, r => r.result) }, '立即运行'))))));
+    h('td', {}, j.enabled ? h('button', { class: 'btn small', onclick: () => confirm(`现在运行「${j.title}」?`) &&
+      act(async () => { const r = await api(`/api/jobs/${j.name}/run`, { method: 'POST' }); refresh && refresh(); return r; }, r => r.result) }, '立即运行') : null)))));
 }
 
 async function viewJobs() {
-  page('例行任务', h('span', { class: 'muted' }, '回顾、简报、整理、清理……每次运行都有记录'));
+  page('例行任务', h('span', { class: 'muted' }, '会话画像、每日回顾、每周整理记忆、清理，每次运行都有记录'));
   const top = card('任务');
   const log = card('运行记录');
   async function load() {

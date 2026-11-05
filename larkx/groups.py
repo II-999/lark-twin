@@ -1,9 +1,9 @@
 """会话分类与关注度。
 
 关注度决定分身怎么对待一个会话:
-- 重点关注 focus: 每条都读, 提炼进记忆, 简报里写进展;
-- 简单关注 light: 只挑和本人有关的(@本人、提到本人负责的事或分类关键词、需要本人处理的), 简报里只列这些;
-- 只存不看 archive: 存进本地库能查, 不进回顾和简报, 按保留期清理。
+- 重点关注 focus: 每日回顾每条都读, 提炼进记忆;
+- 简单关注 light: 只挑和本人有关的(@本人、提到本人负责的事或分类关键词、需要本人处理的);
+- 只存不看 archive: 存进本地库能查, 不进回顾, 设了保留天数时按保留期清理。
 关注度设在分类上, 单个会话可以覆盖; 私人分类的内容不进工作记忆。
 
 分类以本人确认的为准。画像(profile)按信号给每个会话一个建议(分类名、关注度、原因), 确认前先按建议生效;
@@ -26,9 +26,10 @@ FOLLOW_GROUP = ('跟分类', 'group', 'auto', '自动')
 PROFILE_DAYS = 30
 BIG_GROUP = 300
 # 建议分类用的名称关键词(不分大小写)
-BOT_ACTION = ('审批', 'bpm', '日历', '邮箱', '云文档', '权限', '安全', '数据治理', '纪要', 'okr', '任务', 'kani', 'gso')
+# 通知类机器人里需要本人处理的(审批、权限之类); 公司内部还有别的, 用 LARKX_BOT_ACTION_KEYWORDS 补充
+BOT_ACTION = ('审批', 'bpm', '日历', '邮箱', '云文档', '权限', '安全', '数据治理', '纪要', 'okr', '任务')
 BOT_ADMIN = ('餐厅', '工资', '报销', '人力', '访客', '物品', '办公用品', '健康', 'ehs', '廉洁', '道德', '公益', 'travel',
-             '班车', '广播', 'techhub', 'bytetech', '活动', '推送助手')
+             '班车', '广播', '活动', '推送助手')
 TEST_WORDS = ('测试', 'test')
 ALERT_WORDS = ('报警', '告警', 'alarm', '监控', '值班', 'oncall')
 NOTICE_WORDS = ('周知', '通知', '公告', '周会', '双周会')
@@ -41,19 +42,32 @@ def parse_attention(text: str) -> str:
     return key
 
 
+def at_owner(content_data: str, content: str, owner_id: str, owner_name: str = '') -> bool:
+    """这条消息是不是 @ 了本人: 入库时记下的 @ 列表(_larkx_mention_ids)里有本人, 或者正文里有 @本人名字。"""
+    try:
+        ids = (json.loads(content_data or '{}') or {}).get('_larkx_mention_ids') or []
+    except (ValueError, AttributeError):
+        ids = []
+    return str(owner_id) in {str(x) for x in ids} or bool(owner_name and f'@{owner_name}' in (content or ''))
+
+
+def action_words(cfg: dict) -> tuple:
+    return tuple(w for w in str(cfg.get('bot_action_keywords') or '').split(',') if w.strip())
+
+
 def _has(name: str, words) -> bool:
     low = (name or '').lower()
     return any(w in low for w in words)
 
 
-def suggest(p: ChatProfile, owner_id: str):
+def suggest(p: ChatProfile, owner_id: str, action_words=()):
     """按信号给出 (建议分类名, 关注度, 原因)。拿不准的给简单关注, 只存不看只给确实没信息量的。"""
     name = p.name or ''
     if p.chat_type == 1:
         if p.peer_id and str(p.peer_id) == str(owner_id):
             return '本人', 'archive', '自己的私聊: 指令和通知通道'
         if p.peer_bot == 1:
-            if _has(name, BOT_ACTION):
+            if _has(name, BOT_ACTION + tuple(action_words)):
                 return '需要你处理的通知', 'light', '通知类机器人: 只挑需要你处理的'
             if _has(name, BOT_ADMIN):
                 return '行政生活', 'archive', '行政生活类机器人'
@@ -80,9 +94,10 @@ def suggest(p: ChatProfile, owner_id: str):
 
 
 class ChatStore:
-    def __init__(self, storage):
+    def __init__(self, storage, action_words=()):
         self.storage = storage
         self.Session = storage.Session
+        self.action_words = tuple(w.strip().lower() for w in action_words if w.strip())
 
     # ---- 分类 ----
 
@@ -244,19 +259,23 @@ class ChatStore:
 
     def stats(self, owner_id: str, owner_name: str, since_ts: int) -> dict:
         """本地消息库里每个会话 since_ts 之后的条数、本人发言数、被 @ 次数、最后一条的时间。"""
-        mention = [Message.content_data.like(f'%"{owner_id}"%')]
-        if owner_name:
-            mention.append(Message.content.like(f'%@{owner_name}%'))
         s = self.Session()
         try:
             rows = (s.query(Message.chat_id, func.count(),
                             func.sum(case((Message.sender_id == str(owner_id), 1), else_=0)),
-                            func.sum(case((Message.sender_id != str(owner_id), case((or_(*mention), 1), else_=0)),
-                                          else_=0)),
                             func.max(Message.create_time))
                     .filter(Message.create_time >= since_ts).group_by(Message.chat_id).all())
-            out = {cid: {'msgs': n, 'owner_msgs': int(own or 0), 'at_me': int(at or 0), 'last_at': int(last or 0)}
-                   for cid, n, own, at, last in rows}
+            out = {cid: {'msgs': n, 'owner_msgs': int(own or 0), 'at_me': 0, 'last_at': int(last or 0)}
+                   for cid, n, own, last in rows}
+            # 被 @: 先用 LIKE 粗筛, 再确认本人 id 真的在入库时记下的 @ 列表里(合并转发的记录里也有本人 id, 不算)
+            rough = [Message.content_data.like(f'%"{owner_id}"%')]
+            if owner_name:
+                rough.append(Message.content.like(f'%@{owner_name}%'))
+            for cid, data, content in (s.query(Message.chat_id, Message.content_data, Message.content)
+                                       .filter(Message.create_time >= since_ts, Message.sender_id != str(owner_id),
+                                               or_(*rough))):
+                if cid in out and at_owner(data, content, owner_id, owner_name):
+                    out[cid]['at_me'] += 1
             # 私聊对象: 出现最多的非本人发送者
             peers = (s.query(Message.chat_id, Message.sender_id, func.count().label('n'))
                      .filter(Message.chat_type == 1, Message.sender_id != str(owner_id), Message.sender_id != '')
@@ -288,8 +307,10 @@ class ChatStore:
                 if getattr(row, k) is None:
                     setattr(row, k, -1)
             before = (row.suggested_group, row.suggested_attention)
-            row.suggested_group, row.suggested_attention, row.reason = suggest(row, owner_id)
+            row.suggested_group, row.suggested_attention, row.reason = suggest(row, owner_id, self.action_words)
             row.profiled_at = datetime.now()
+            if new or before[1] != row.suggested_attention or not row.suggested_at:
+                row.suggested_at = row.profiled_at
             s.merge(row)
             s.commit()
             return new, before != (row.suggested_group, row.suggested_attention)
@@ -297,10 +318,23 @@ class ChatStore:
             s.close()
 
 
-def profile_all(client, storage, owner_id: str, now: float = None) -> dict:
+def feishu_pins(client):
+    """本人飞书侧边栏的置顶会话 id; 拿不全(还有更多)或请求失败时返回 None, 这时不改画像里的置顶信号。"""
+    try:
+        resp = client.api('feed.PullShortcutsRequest', {}) or {}
+        if resp.get('hasMore'):  # 这个接口的 position 不是翻页偏移, 拿不全时用大 count 再要一次
+            resp = client.api('feed.PullShortcutsRequest', {'count': 1000}) or {}
+        if resp.get('hasMore'):
+            return None
+        return {str(x.get('id')) for x in resp.get('shortcuts') or [] if x.get('type', 1) == 1}
+    except Exception:
+        return None
+
+
+def profile_all(client, storage, owner_id: str, now: float = None, action_words=()) -> dict:
     """刷新所有本地会话的画像: 本地消息统计 + 服务端的人数、免打扰、置顶、私聊对象是不是机器人。返回统计。"""
     now = now or time.time()
-    st = ChatStore(storage)
+    st = ChatStore(storage, action_words)
     owner_name = storage.owner_name(owner_id)
     stats = st.stats(owner_id, owner_name, int(now - PROFILE_DAYS * 86400))
     s = storage.Session()
@@ -310,11 +344,7 @@ def profile_all(client, storage, owner_id: str, now: float = None) -> dict:
         known = {p.chat_id: p for p in s.query(ChatProfile).all()}
     finally:
         s.close()
-    pins = set()
-    try:
-        pins = {str(x.get('id')) for x in (client.api('feed.PullShortcutsRequest', {}) or {}).get('shortcuts') or []}
-    except Exception:
-        pass
+    pins = feishu_pins(client)
     info = {}
     for i in range(0, len(chat_ids), 20):
         try:
@@ -334,8 +364,8 @@ def profile_all(client, storage, owner_id: str, now: float = None) -> dict:
             try:
                 bot = client.is_bot(peer)
                 # LarkClient 查失败时按真人返回且不记住: 这时保持未知, 下次画像再查, 免得一次失败就记成真人
-                known = getattr(client, '_bots', None)
-                peer_bot = (1 if bot else 0) if known is None or str(peer) in known else -1
+                cached = getattr(client, '_bots', None)
+                peer_bot = (1 if bot else 0) if cached is None or str(peer) in cached else -1
             except Exception:
                 pass
         remind = (ch.get('userSetting') or {}).get('isRemind', ch.get('isRemind'))
@@ -348,7 +378,7 @@ def profile_all(client, storage, owner_id: str, now: float = None) -> dict:
         is_new, did_change = st.save_profile(
             cid, owner_id, name=name or None, chat_type=chat_type, members=ch.get('memberCount'), peer_id=peer or None,
             peer_bot=peer_bot, feishu_muted=None if remind is None else (0 if remind else 1),
-            feishu_pinned=1 if cid in pins else 0, msgs=sig.get('msgs', 0), owner_msgs=sig.get('owner_msgs', 0),
+            feishu_pinned=None if pins is None else (1 if cid in pins else 0), msgs=sig.get('msgs', 0), owner_msgs=sig.get('owner_msgs', 0),
             at_me=sig.get('at_me', 0), last_at=sig.get('last_at') or (old.last_at if old else 0))
         if is_new:
             new.append(cid)

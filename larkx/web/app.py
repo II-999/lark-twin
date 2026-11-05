@@ -234,7 +234,14 @@ def conversations(request: Request):
 
 @api
 def chats(request: Request):
-    """会话列表, 按最近活跃排序, 带分类、关注度和画像信号。"""
+    owner = _owner_chat()
+    return _json([{'chat_id': c.chat_id, 'name': c.name or (OWNER_CHAT_NAME if c.chat_id == owner else ''),
+                   'chat_type': c.chat_type, 'updated_at': c.updated_at} for c in Storage().list_chats(limit=100)])
+
+
+@api
+def chat_profiles(request: Request):
+    """「会话」页: 按最近活跃排序的会话, 带分类、关注度和画像信号。"""
     from .. import groups
     st, owner = Storage(), _owner_chat()
     order = [c.chat_id for c in st.list_chats(limit=int(request.query_params.get('limit', 500)))]
@@ -690,7 +697,7 @@ def create_app() -> Starlette:
     routes = [
         Route('/', index), Route('/console', old_console), Route('/login', login, methods=['POST']),
         Route('/api/overview', overview), Route('/api/activity', activity), Route('/api/conversations', conversations),
-        Route('/api/chats', chats), Route('/api/mentions', mentions),
+        Route('/api/chats', chats), Route('/api/chat-profiles', chat_profiles), Route('/api/mentions', mentions),
         Route('/api/chats/{chat_id}/group', chat_group, methods=['PUT']),
         Route('/api/groups', groups_api, methods=['GET', 'POST']),
         Route('/api/groups/{group_id:int}', group_item, methods=['PUT', 'DELETE']),

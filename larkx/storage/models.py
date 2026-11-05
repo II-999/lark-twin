@@ -136,7 +136,6 @@ class ChatGroup(Base):
     private = Column(Integer, default=0)
     keywords = Column(Text, default='[]')          # 简单关注时这些词出现也算和本人有关
     position = Column(Integer, default=0)
-    feishu_label_id = Column(String(32), default='')  # 对应的飞书标签
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -163,15 +162,16 @@ class ChatProfile(Base):
     at_me = Column(Integer, default=0)
     last_at = Column(BigInteger, default=0)
     profiled_at = Column(DateTime)
+    suggested_at = Column(DateTime)                   # 建议的关注度最近一次变化的时间(清理的保护期从这里算)
     created_at = Column(DateTime, default=datetime.now)
 
 
 class JobRun(Base):
-    """例行任务(每日回顾、简报、清理……)的每次运行: 先记下再执行, 状态和结果都看得见。"""
+    """例行任务(会话画像、每日回顾、清理……)的每次运行: 先记下再执行, 状态和结果都看得见。"""
     __tablename__ = 'job_runs'
     id = Column(Integer, primary_key=True, autoincrement=True)
     job = Column(String(32), default='', index=True)
-    slot = Column(String(32), default='')          # 这次属于哪个时段: '2026-11-03' | 'once' | 'manual-<时间戳>'
+    slot = Column(String(32), default='')          # 这次属于哪个时段: '2026-11-03' | 'manual-<时间戳>'
     attempt = Column(Integer, default=1)
     trigger = Column(String(16), default='schedule')  # schedule | manual | startup
     status = Column(String(16), default='queued', index=True)  # queued running ok failed skipped interrupted

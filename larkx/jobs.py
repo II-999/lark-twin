@@ -26,8 +26,9 @@ class Job:
     kind: str        # local: daemon 里直接跑的代码; agent: 交给数字人的一轮(维护任务)
     when: Callable   # cfg -> (时, 分, 星期几或 None); 关掉时返回 None
     grace: int = 0   # 到点后超过这么多秒还没开始就不跑了, 记为跳过(0 = 当天内都补)
-    max_attempts: int = 2
+    max_attempts: int = 2  # 一个时段里总共最多跑几次(第一次 + 重试)
     retry_after: int = 1800
+    after: str = ''        # 等这个任务当天这一次结束(完成、跳过或重试用完)后再跑
 
 
 def _review_at(cfg):
@@ -49,8 +50,9 @@ def _before_review(cfg):
 
 
 def _after_review(cfg):
-    """回顾后半小时清理; 关掉回顾时按 4:30。只在配了保留天数时跑(默认都不删, 手动 larkx prune 随时可用)。"""
-    if not (int(cfg.get('retention_archive_days') or 0) > 0 or int(cfg.get('retention_light_days') or 0) > 0):
+    """回顾后半小时清理; 关掉回顾时按 4:30。要打开会话分类并配了保留天数才跑(默认都不删, 手动 larkx prune 随时可用)。"""
+    if not cfg.get('chat_groups') or not (int(cfg.get('retention_archive_days') or 0) > 0
+                                          or int(cfg.get('retention_light_days') or 0) > 0):
         return None
     hour = cfg.get('memory_review_hour', -1)
     return (hour if 0 <= hour <= 23 else 4, 30, None)
@@ -60,7 +62,7 @@ JOBS = [
     Job('profile', '会话画像', 'local', _before_review),
     Job('review', '每日回顾', 'agent', _review_at),
     Job('consolidate', '每周整理记忆', 'agent', _consolidate_at),
-    Job('prune', '清理旧数据', 'local', _after_review),
+    Job('prune', '清理旧数据', 'local', _after_review, after='profile'),
 ]
 
 
@@ -195,7 +197,21 @@ class JobStore:
             return None
         if runs and (now - (runs[-1].finished_at or runs[-1].created_at)).total_seconds() < job.retry_after:
             return None
+        if job.after and self.waiting_for(get(job.after), cfg, now):
+            return None
         return ('run', key, len(runs) + 1)
+
+    def waiting_for(self, dep: Job, cfg: dict, now: datetime) -> bool:
+        """前置任务今天这一次还没结束(没跑、在跑、等重试)时返回 True; 前置任务关掉或今天不跑时不等。"""
+        if dep is None:
+            return False
+        cur = slot(dep, cfg, now)
+        if not cur:
+            return False
+        runs = self.runs(dep.name, cur[0])
+        if any(r.status in SETTLED for r in runs):
+            return False
+        return not (len(runs) >= dep.max_attempts and not any(r.status in ACTIVE for r in runs))
 
     def get_state(self, job: str) -> dict:
         s = self.Session()
