@@ -1,4 +1,4 @@
-"""整理方案: 提交校验、编号、按条执行、撤销还原(分类、飞书标签、置顶、标记、免打扰)、权限、私信本人。"""
+"""整理方案: 开关和每类改动可选、提交校验、编号、按条执行、撤销还原(不覆盖之后的手动改动)、只管自己建的标签、权限、私信本人。"""
 import argparse
 import asyncio
 import json
@@ -17,17 +17,19 @@ class FakeFeishu:
 
     def __init__(self):
         self.pins, self.flags, self.remind, self.labels, self.next_id = ['p0', 'g9'], set(), {}, {}, 1000
+        self.types = {}  # 置顶里非会话的(文档等): id -> type
 
     def api(self, name, d=None):
         d = d or {}
         if name == 'feed.PullShortcutsRequest':
-            return {'shortcuts': [{'id': i, 'type': 1} for i in self.pins]}
+            return {'shortcuts': [{'id': i, 'type': self.types.get(i, 1)} for i in self.pins], 'hasMore': False}
         if name == 'feed.PutShortcutsRequest':
             self.pins += [s['id'] for s in d['shortcuts'] if s['id'] not in self.pins]
         elif name == 'feed.DeleteShortcutsRequest':
             gone = {s['id'] for s in d['shortcuts']}
             self.pins = [i for i in self.pins if i not in gone]
         elif name == 'feed.PatchShortcutsRequest':
+            assert all(s['type'] == self.types.get(s['id'], 1) for s in d['shortcuts'])    # 类型原样提交
             self.pins = [s['id'] for s in sorted(d['shortcuts'], key=lambda s: s['position'])]
         elif name == 'feed.PullFlagsRequest':
             return {'items': [{'itemId': int(i)} for i in self.flags]}
@@ -87,7 +89,7 @@ def test_submit_validates_and_numbers(st):
                      (8, 'flag'), (9, 'mute')]
     text = store.render(p.id)
     assert '【初始整理方案 #1】 按业务分类' in text and '1. 建分类「项目A」重点关注(2 个会话: 项目群、赵六)' in text
-    assert '/ai 同意 1-5,8' in text and store.by_source('job:organize_init#3')[0].id == p.id
+    assert '/ai 同意 #1 1-5,8' in text and store.by_source('job:organize_init#3')[0].id == p.id
 
 
 def test_parse_items():
@@ -96,6 +98,8 @@ def test_parse_items():
     assert organize.parse_items('2、4', 4) == [2, 4]
     with pytest.raises(ValueError):
         organize.parse_items('9', 3)
+    with pytest.raises(ValueError):                                  # 不写不算全部
+        organize.parse_items('', 3)
 
 
 def test_apply_subset_and_undo(st):
@@ -103,27 +107,71 @@ def test_apply_subset_and_undo(st):
                      'create_time': int(time.time())}, chat_name='老群')
     fs, store = FakeFeishu(), organize.OrganizeStore(st)
     ops = organize.FeishuOps(fs)
-    fs.labels['500'] = ('项目A', ['99'])                               # 已有同名标签: 按并集重建
+    fs.labels['500'] = ('测试', ['99'])                                # 本人自己建的同名标签: 不动, 跳过
     p = store.submit(PLAN)
-    res = store.apply(p.id, [1, 2, 3, 5, 6, 7, 8, 9], ops)
-    assert all(r == '已执行' for _, r in res) and len(res) == 8
+    res = dict(store.apply(p.id, [1, 2, 3, 4, 5, 6, 7, 8, 9], ops))
+    assert res[4].startswith('跳过') and all(r == '已执行' for k, r in res.items() if k != 4)
+    assert fs.labels['500'] == ('测试', ['99'])
     cs = groups.ChatStore(st)
     v = {r['chat_id']: r for r in cs.view()}
     assert (v['11']['group'], v['11']['attention'], v['14']['attention'], v['12']['attention']) == \
         ('项目A', 'focus', 'focus', 'archive')
-    assert sorted(n for n, _ in fs.labels.values()) == ['项目A'] and \
-        sorted(next(iter(fs.labels.values()))[1]) == ['11', '14', '99']
-    assert cs.group('项目A').feishu_label_id in fs.labels
+    own = cs.group('项目A').feishu_label_id
+    assert fs.labels[own] == ('项目A', ['11', '14'])
     assert fs.pins == ['p0', '11'] and '777' in fs.flags and fs.remind['13'] is False
-    assert store.get(p.id).status == 'pending'                            # 第 4 条还没定
-    assert store.reject(p.id, [4]) == 1 and store.get(p.id).status == 'done'
+    assert store.get(p.id).status == 'done'
     assert store.apply(p.id, [1], ops) == []                              # 执行过的不重复
     undone = store.undo(p.id, ops)
     assert len(undone) == 8 and all(r == '已撤销' for _, r in undone)
     assert fs.pins == ['p0', 'g9'] and '777' not in fs.flags and fs.remind['13'] is True
-    assert [(n, sorted(m)) for n, m in fs.labels.values()] == [('项目A', ['99'])]
+    assert list(fs.labels.values()) == [('测试', ['99'])]                 # 自己建的删了, 用户的还在
     v = {r['chat_id']: r for r in cs.view()}
     assert v['11']['group'] == '' and not v['11']['confirmed'] and cs.group('项目A') is None
+
+
+def test_undo_keeps_changes_made_afterwards(st):
+    """执行之后本人又手动改过的, 撤销时不覆盖; 取消置顶撤销后放回原来的位置。"""
+    fs, store = FakeFeishu(), organize.OrganizeStore(st)
+    ops = organize.FeishuOps(fs)
+    fs.pins = ['p0', '11', 'g9']
+    p = store.submit({'unpin': ['11'], 'mute': ['大群', '测试群'], 'pin': ['赵六'],
+                      'groups': [{'name': '项目A', 'chats': ['项目群', '赵六']}], 'labels': False})
+    store.apply(p.id, organize.parse_items('全部', len(store.items(p.id))), ops)
+    cs = groups.ChatStore(st)
+    cs.assign(['14'], group_id=cs.create_group('别的', 'light').id)           # 本人之后把赵六挪走了
+    fs.remind['12'] = True                                                   # 本人又解除了测试群的免打扰
+    fs.pins.remove('14')                                                     # 本人自己取消了置顶
+    store.undo(p.id, ops)
+    assert fs.pins == ['p0', '11', 'g9']                                     # 放回原位
+    assert cs.view(['14'])[0]['group'] == '别的' and fs.remind['13'] is True and fs.remind['12'] is True
+
+
+def test_mute_unknown_state_skipped(st):
+    """读不到提醒状态的会话不设免打扰, 撤销时也不会把本来免打扰的解除。"""
+    fs, store = FakeFeishu(), organize.OrganizeStore(st)
+    ops = organize.FeishuOps(fs)
+    ops.remind = lambda ids: {c: None for c in ids}
+    p = store.submit({'mute': ['大群']})
+    assert store.apply(p.id, [1], ops)[0][1].startswith('跳过') and '13' not in fs.remind
+
+
+def test_kinds_filter_submit_and_apply(st):
+    store = organize.OrganizeStore(st, organize.enabled_kinds({'organize_items': '分类,免打扰'}))
+    p = store.submit(PLAN)
+    assert {i.kind for i in store.items(p.id)} == {'group', 'mute'} and '没打开' in store.get(p.id).summary
+    with pytest.raises(ValueError, match='没打开的类型'):
+        store.submit({'pin': ['项目群']})
+    full = organize.OrganizeStore(st).submit({'pin': ['项目群']})                    # 之前打开时提交的
+    assert '没打开「置顶」' in store.apply(full.id, [1], organize.FeishuOps(FakeFeishu()))[0][1]
+    from larkx.config import DEFAULTS
+    assert organize.enabled_kinds(DEFAULTS) == {'group', 'pin', 'unpin', 'pin_order', 'mute'}
+
+
+def test_pin_order_keeps_non_chat_shortcuts(st):
+    fs = FakeFeishu()
+    fs.pins, fs.types = ['p0', 'doc1', 'g9', '11'], {'doc1': 4}
+    organize.FeishuOps(fs).order(['11', 'p0'])
+    assert fs.pins == ['11', 'doc1', 'p0', 'g9']                            # 文档留在原位, 会话按顺序排
 
 
 def _args(**kw):
@@ -131,7 +179,13 @@ def _args(**kw):
 
 
 def test_cli_permissions_and_flow(st, monkeypatch, tmp_path, capsys):
+    from larkx import notify
+    from larkx.config import DEFAULTS
     fs = FakeFeishu()
+    monkeypatch.setattr(cli, 'load_config', lambda: dict(DEFAULTS))
+    assert cli.cmd_organize(_args(action='show')) == 3                      # 默认关: 一律拒绝
+    monkeypatch.setattr(cli, 'load_config', lambda: dict(DEFAULTS, chat_groups=True, organize=True))
+    monkeypatch.setattr(notify, '_load', lambda: {'owner_chat': 'self'})
     monkeypatch.setattr(cli, 'Storage', lambda: st)
     monkeypatch.setattr(cli, 'LarkClient', lambda auth: fs)
     monkeypatch.setattr(cli, 'LarkAuth', lambda: None)
@@ -145,10 +199,14 @@ def test_cli_permissions_and_flow(st, monkeypatch, tmp_path, capsys):
                                                      'ref': 'job:organize#2'})
     assert cli.cmd_organize(_args(action='submit', target=str(f))) == 0
     assert '【每周整理方案 #1】' in capsys.readouterr().out
-    assert cli.cmd_organize(_args(action='apply')) == 3                     # 维护任务里不能执行
+    assert cli.cmd_organize(_args(action='apply', target='1', items='1')) == 3   # 维护任务里不能执行
     assert cli.cmd_organize(_args(action='show')) == 0
+    monkeypatch.setattr(state, 'read_turn', lambda: {'kind': 'message', 'chat_id': 'g1', 'is_owner': True, 'ref': 'm1'})
+    assert cli.cmd_organize(_args(action='apply', target='1', items='1')) == 3   # 本人在群里说的也不行, 只认私聊
     monkeypatch.setattr(state, 'read_turn', lambda: {'kind': 'message', 'chat_id': 'self', 'is_owner': True, 'ref': 'm1'})
-    assert cli.cmd_organize(_args(action='apply', items='1')) == 0          # 本人在私聊说 "/ai 同意 1"
+    assert cli.cmd_organize(_args(action='apply', items='1')) == 1          # 要写方案编号
+    assert cli.cmd_organize(_args(action='apply', target='#1')) == 1        # 要写第几条
+    assert cli.cmd_organize(_args(action='apply', target='#1', items='1')) == 0  # 本人在私聊说 "/ai 同意 #1 1"
     assert fs.remind['13'] is False
     assert cli.cmd_organize(_args(action='undo', target='1')) == 0
     assert fs.remind['13'] is True
@@ -181,13 +239,18 @@ def test_organize_prompt_has_context(st, fake_client):
     from larkx.daemon import prompts
     fake_client.api_responses = {'feed.PullShortcutsRequest': {'shortcuts': [{'id': '11'}]},
                                  'feed.PullFeedGroupsRequest': {'feedGroups': []}}
-    text = prompts.BUILDERS['organize_init']({}, st, datetime.now(), OWNER, client=fake_client)
+    from larkx.config import DEFAULTS
+    text = prompts.BUILDERS['organize_init'](dict(DEFAULTS), st, datetime.now(), OWNER, client=fake_client)
     assert '初始整理会话' in text and '项目群 | 11 |' in text and '飞书置顶(按顺序): 项目群' in text
     assert 'larkx organize submit downloads/organize.json' in text
+    assert '"pin"' in text and '"mute"' in text and '"flag"' not in text and '飞书标签' not in text   # 默认三类
+    full = prompts.BUILDERS['organize'](dict(DEFAULTS, organize_items='分类,置顶,免打扰,标记,标签'), st,
+                                        datetime.now(), OWNER, client=fake_client)
+    assert '"flag"' in full and '"labels": true' in full and '1. 分类' in full and '5. 免打扰' in full
 
 
-def test_label_keeps_local_members_when_remote_read_empty(st):
-    """读标签成员的接口读回空时, 重建标签不能丢掉分类里原有的会话。"""
+def test_own_label_rebuilt_from_local_group(st):
+    """本程序建的标签: 成员以本地分类为准(读标签成员的接口不可靠), 删掉按并集重建; 撤销时恢复成原来的成员。"""
     fs, store = FakeFeishu(), organize.OrganizeStore(st)
     ops = organize.FeishuOps(fs)
     cs = groups.ChatStore(st)
@@ -195,7 +258,6 @@ def test_label_keeps_local_members_when_remote_read_empty(st):
     cs.assign(['13'], group_id=g.id)
     fs.labels['500'] = ('项目A', ['13'])
     cs.update_group(g.id, feishu_label_id='500')
-    ops.label_items = lambda lid: []                                    # 接口读不到
     p = store.submit({'groups': [{'name': '项目A', 'attention': '重点关注', 'chats': ['项目群']}]})
     store.apply(p.id, [1, 2], ops)
     assert sorted(next(iter(fs.labels.values()))[1]) == ['11', '13']

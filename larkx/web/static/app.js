@@ -103,6 +103,8 @@ function card(title, ...kids) {
 
 async function loadChats() {
   try { for (const c of await api('/api/chats')) chatNames[c.chat_id] = c.name; } catch (e) { /* 登录前忽略 */ }
+  // 整理方案没打开时导航里不显示「整理」
+  try { document.getElementById('nav-organize').hidden = !(await api('/api/proposals?limit=1')).enabled; } catch (e) { /* 登录前忽略 */ }
 }
 const chatLabel = (id, name) => name || chatNames[id] || (id ? `会话 ${id}` : '');
 
@@ -704,7 +706,9 @@ async function viewOrganize() {
   const box = h('div');
   $main.append(box);
   async function load() {
-    const list = await api('/api/proposals');
+    const d = await api('/api/proposals');
+    if (!d.enabled) { put(box, h('section', { class: 'card' }, h('div', { class: 'empty' }, '整理方案没有打开（.env 里设 LARKX_CHAT_GROUPS=true 和 LARKX_ORGANIZE=true 后重启服务）。'))); return; }
+    const list = d.proposals;
     if (!list.length) { put(box, h('section', { class: 'card' }, h('div', { class: 'empty' }, '还没有整理方案。打开会话分类和 LARKX_ORGANIZE 后，分身会先提一份，之后每周一份；也可以在飞书里让它「整理一下我的会话」。'))); return; }
     put(box, list.map(p => {
       const checks = {};

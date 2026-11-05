@@ -153,9 +153,11 @@ def _lifecycle(st, cfg) -> dict:
 
 
 def _pending_proposal(st):
-    """最新的整理方案里还有没决定的条目时, 总览上提示一下。"""
-    from ..organize import OrganizeStore
-    store = OrganizeStore(st)
+    """最新的整理方案里还有没决定的条目时, 总览上提示一下; 没打开整理方案时不提示。"""
+    from .. import organize
+    if not organize.enabled(load_config()):
+        return None
+    store = organize.OrganizeStore(st)
     prop = store.get()
     pending = [i for i in store.items(prop.id) if i.status == 'pending'] if prop else []
     return {'id': prop.id, 'pending': len(pending)} if pending else None
@@ -344,24 +346,33 @@ def jobs_api(request: Request):
 
 @api
 def proposals(request: Request):
-    """最近的整理方案和每条的状态。"""
-    from ..organize import OrganizeStore
-    store = OrganizeStore(Storage())
-    return _json([{'id': p.id, 'trigger': p.trigger, 'status': p.status, 'summary': p.summary, 'created_at': p.created_at,
+    """最近的整理方案和每条的状态; 没打开整理方案时 enabled=false, 列表为空。"""
+    from .. import organize
+    cfg = load_config()
+    if not organize.enabled(cfg):
+        return _json({'enabled': False, 'items': [], 'proposals': []})
+    store = organize.OrganizeStore(Storage())
+    return _json({'enabled': True, 'items': sorted(organize.ITEM_NAMES[k] for k in organize.enabled_kinds(cfg)
+                                                   if k in organize.ITEM_NAMES), 'proposals': [{'id': p.id, 'trigger': p.trigger, 'status': p.status, 'summary': p.summary, 'created_at': p.created_at,
                    'items': [{'seq': i.seq, 'kind': i.kind, 'title': i.title, 'reason': i.reason, 'status': i.status,
                               'error': i.error} for i in store.items(p.id)]}
-                  for p in store.list(int(request.query_params.get('limit', 10)))])
+                  for p in store.list(int(request.query_params.get('limit', 10)))]})
 
 
 @api
 def proposal_item(request: Request):
     """POST {action: apply|reject|undo, items: [编号]}: 本人在网页上同意、放弃或撤销。"""
     from .. import organize
+    cfg = load_config()
+    if not organize.enabled(cfg):
+        raise ValueError('整理方案没有打开(LARKX_CHAT_GROUPS 和 LARKX_ORGANIZE)')
     st, pid, b = Storage(), request.path_params['proposal_id'], request.state.body
-    store = organize.OrganizeStore(st)
+    store = organize.OrganizeStore(st, organize.enabled_kinds(cfg))
     if not store.get(pid):
         raise ValueError('没有这个方案')
     action, seqs = b.get('action'), [int(x) for x in b.get('items') or []]
+    if action in ('apply', 'reject') and not seqs:
+        raise ValueError('要选上至少一条')
     if action == 'reject':
         res = [(s, '已放弃') for s in seqs] if store.reject(pid, seqs) else []
     elif action in ('apply', 'undo'):

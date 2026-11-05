@@ -21,7 +21,8 @@ def _json_default(o):
 
 
 # create_all 只建新表不加列: 表已经存在、后来才加的列在这里补上(列名, 类型)
-ADDED_COLUMNS = {'chat_profiles': [('suggested_at', 'DATETIME')]}
+ADDED_COLUMNS = {'chat_profiles': [('suggested_at', 'DATETIME')],
+                 'chat_groups': [('feishu_label_id', "VARCHAR(32) DEFAULT ''")]}
 
 
 def _add_columns(engine):

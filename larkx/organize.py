@@ -1,10 +1,15 @@
-"""整理方案: 分身提出一组改动, 本人同意哪几条就执行哪几条, 每条都能撤销。
+"""整理方案: 分身提出一组改动, 本人同意哪几条就执行哪几条, 每条都能撤销。整个功能和每一类改动都是可选的:
 
-改动类型(执行顺序): 分类(本地) -> 飞书标签 -> 取消置顶 -> 置顶 -> 置顶排序 -> 标记消息 -> 免打扰。
-飞书上的改动只影响本人自己的客户端(置顶、标记、标签、免打扰), 不对外发消息。执行前记下原来的状态, 撤销时还原。
+- LARKX_ORGANIZE 总开关, 默认关; 关着时提交、执行、撤销的命令和网页接口都拒绝。
+- LARKX_ORGANIZE_ITEMS 选提哪几类: 分类(本地)、置顶(含取消、排序)、免打扰、标记、标签(飞书标签)。
+  默认只有分类、置顶、免打扰; 没打开的类型既不提也不执行。
 
-方案由数字人写成 JSON 交给 larkx organize submit(冷启动初始化记忆后一次, 之后每周一次, 本人也可以随时要),
-daemon 把编号列表私信给本人; 本人回 "/ai 同意 1-5,8" 之类, 数字人执行 larkx organize apply。
+改动类型(执行顺序): 分类 -> 飞书标签 -> 取消置顶 -> 置顶 -> 置顶排序 -> 标记消息 -> 免打扰。
+飞书上的改动只影响本人自己的客户端, 不对外发消息。执行前记下原来的状态, 撤销时还原;
+本人执行之后又手动改过的, 撤销时不覆盖。飞书标签只管本程序建的, 用户自己的标签(包括同名的)一律不动。
+
+方案由数字人写成 JSON 交给 larkx organize submit(打开后先提一次, 之后每周一次, 本人也可以随时要),
+daemon 把编号列表私信给本人; 本人在私聊回 "/ai 同意 #3 1-5,8" 之类, 数字人执行 larkx organize apply 3 --items 1-5,8。
 """
 import json
 import re
@@ -21,6 +26,30 @@ KIND_ORDER = ('group', 'label', 'unpin', 'pin', 'pin_order', 'flag', 'mute')
 KIND_NAMES = {'group': '分类', 'label': '飞书标签', 'unpin': '取消置顶', 'pin': '置顶', 'pin_order': '置顶排序',
               'flag': '标记消息', 'mute': '免打扰'}
 TRIGGER_NAMES = {'init': '初始整理', 'weekly': '每周整理', 'manual': '整理'}
+# LARKX_ORGANIZE_ITEMS 里的名字 -> 改动类型
+ITEM_KINDS = {'分类': ('group',), '置顶': ('pin', 'unpin', 'pin_order'), '免打扰': ('mute',), '标记': ('flag',),
+              '标签': ('label',)}
+
+
+ITEM_NAMES = {'group': '分类', 'pin': '置顶', 'mute': '免打扰', 'flag': '标记', 'label': '标签'}
+
+
+def enabled(cfg: dict) -> bool:
+    return bool(cfg.get('organize') and cfg.get('chat_groups'))
+
+
+def enabled_kinds(cfg: dict) -> set:
+    """打开了哪几类改动; 写错的名字忽略。"""
+    names = [n.strip() for n in str(cfg.get('organize_items') or '').replace('，', ',').split(',') if n.strip()]
+    return {k for n in names for k in ITEM_KINDS.get(n, ())}
+
+
+def kind_label(kind: str) -> str:
+    return next(n for n, ks in ITEM_KINDS.items() if kind in ks)
+
+
+class Skip(Exception):
+    """这一条不执行(比如有用户自己建的同名标签), 记为跳过, 不算失败。"""
 
 
 class FeishuOps:
@@ -29,8 +58,18 @@ class FeishuOps:
     def __init__(self, client):
         self.c = client
 
+    def shortcuts(self) -> list:
+        """侧边栏全部置顶(会话、文档等), 按顺序: [{'id', 'type'}]。position 不是翻页偏移, 拿不全时用大 count 再要一次。"""
+        resp = self.c.api('feed.PullShortcutsRequest', {}) or {}
+        if resp.get('hasMore'):
+            resp = self.c.api('feed.PullShortcutsRequest', {'count': 1000}) or {}
+            if resp.get('hasMore'):
+                raise RuntimeError('置顶太多, 一次读不全, 不改置顶')
+        return [{'id': str(x['id']), 'type': x.get('type', 1)} for x in resp.get('shortcuts') or []]
+
     def pins(self) -> list:
-        return [str(s['id']) for s in (self.c.api('feed.PullShortcutsRequest', {}) or {}).get('shortcuts') or []]
+        """置顶的会话(type=1), 按顺序。"""
+        return [x['id'] for x in self.shortcuts() if x['type'] == 1]
 
     def pin(self, ids):
         if ids:
@@ -41,8 +80,14 @@ class FeishuOps:
             self.c.api('feed.DeleteShortcutsRequest', {'shortcuts': [{'id': str(i), 'type': 1} for i in ids]})
 
     def order(self, ids):
+        """把置顶的会话按 ids 排序; 文档等非会话的置顶留在原来的位置, 类型原样提交。"""
+        cur = self.shortcuts()
+        chats = [i for i in ids if any(x['id'] == i and x['type'] == 1 for x in cur)]
+        chats += [x['id'] for x in cur if x['type'] == 1 and x['id'] not in chats]
+        it = iter(chats)
+        full = [{'id': next(it), 'type': 1} if x['type'] == 1 else x for x in cur]
         self.c.api('feed.PatchShortcutsRequest',
-                   {'shortcuts': [{'id': str(i), 'type': 1, 'position': n} for n, i in enumerate(ids)]})
+                   {'shortcuts': [{'id': x['id'], 'type': x['type'], 'position': n} for n, x in enumerate(full)]})
 
     def flags(self) -> set:
         return {str(i['itemId']) for i in (self.c.api('feed.PullFlagsRequest', {'count': 50}) or {}).get('items') or []}
@@ -67,22 +112,16 @@ class FeishuOps:
                 'feedCards': [{'id': str(i), 'type': 1} for i in chat_ids]})
 
     def labels(self) -> dict:
-        resp = self.c.api('feed.PullFeedGroupsRequest', {'count': 20, 'cursor': '', 'version': 1}) or {}
-        return {str(g['id']): g.get('name', '') for g in resp.get('feedGroups') or []}
-
-    def label_items(self, label_id) -> list:
-        """标签里的会话, 尽力而为: 一页最多 50 个(再大接口报 400)。实测这个接口像增量同步, 同一设备常常读回空列表,
-        所以只拿来补充; 标签成员以本地分类为准。"""
-        out, cursor = [], ''
-        for _ in range(40):
-            data = (self.c.api('feed.PullFeedGroupItemsRequest',
-                               {'args': {int(label_id): {'cursor': cursor, 'count': 50}}, 'version': 1}) or {}).get('data') or {}
-            page = data.get(str(label_id)) or {}
-            out += [str(i['feedCardId']) for i in page.get('feedGroupItems') or [] if not i.get('exclude')]
-            if not page.get('hasMore') or not page.get('nextCursor') or page.get('nextCursor') == cursor:
+        """全部飞书标签 {id: 名字}, 翻页读完(一页最多 20 个, 再大接口报 400)。"""
+        out, cursor = {}, ''
+        for _ in range(50):
+            resp = self.c.api('feed.PullFeedGroupsRequest', {'count': 20, 'cursor': cursor, 'version': 1}) or {}
+            out.update({str(g['id']): g.get('name', '') for g in resp.get('feedGroups') or []})
+            nxt = resp.get('nextCursor') or ''
+            if not resp.get('hasMore') or not nxt or nxt == cursor:
                 break
-            cursor = page['nextCursor']
-        return list(dict.fromkeys(out))
+            cursor = nxt
+        return out
 
     def create_label(self, name, chat_ids) -> str:
         r = self.c.api('feed.CreateFeedGroupRequest', {'feedGroup': {'type': 1, 'name': name},
@@ -94,9 +133,11 @@ class FeishuOps:
 
 
 def parse_items(text: str, total: int) -> list:
-    """'1-5,8' / '全部' -> [1,2,3,4,5,8]。"""
+    """'1-5,8' / '全部' -> [1,2,3,4,5,8]。必须写明, 空着不算全部。"""
     text = (text or '').strip()
-    if text in ('', 'all', '全部'):
+    if not text:
+        raise ValueError('要写明第几条, 如 --items 1-5,8; 全部执行写 --items 全部')
+    if text in ('all', '全部'):
         return list(range(1, total + 1))
     out = set()
     for part in re.split(r'[,，、\s]+', text):
@@ -116,10 +157,12 @@ def parse_items(text: str, total: int) -> list:
 
 
 class OrganizeStore:
-    def __init__(self, storage):
+    def __init__(self, storage, kinds=None):
+        """kinds: 打开的改动类型(见 enabled_kinds); None 表示不限制(测试和查看用)。"""
         self.storage = storage
         self.Session = storage.Session
         self.chats = groups.ChatStore(storage)
+        self.kinds = set(KIND_ORDER) if kinds is None else set(kinds)
 
     # ---- 提交 ----
 
@@ -169,12 +212,15 @@ class OrganizeStore:
         if mutes:
             items.append(('mute', f'免打扰 {len(mutes)} 个会话: {self._names(mutes)}', plan.get('mute_reason', ''),
                           {'chat_ids': mutes}))
+        off = sorted({kind_label(k) for k, *_ in items if k not in self.kinds})
+        items = [x for x in items if x[0] in self.kinds]
         if not items:
-            raise ValueError('方案里没有任何改动')
+            raise ValueError('方案里没有任何改动' + (f'(没打开的类型: {"、".join(off)})' if off else ''))
         items.sort(key=lambda x: KIND_ORDER.index(x[0]))
         s = self.Session()
         try:
-            prop = Proposal(trigger=trigger, source_ref=source_ref, summary=str(plan.get('summary') or ''))
+            summary = str(plan.get('summary') or '') + (f'(没打开的{"、".join(off)}类改动已去掉)' if off else '')
+            prop = Proposal(trigger=trigger, source_ref=source_ref, summary=summary)
             s.add(prop)
             s.flush()
             for n, (kind, title, reason, params) in enumerate(items, start=1):
@@ -238,11 +284,12 @@ class OrganizeStore:
             if it.kind != last:
                 lines.append(f'\n{KIND_NAMES[it.kind]}')
                 last = it.kind
-            mark = {'applied': ' ✅', 'failed': ' ❌', 'rejected': ' ✖', 'undone': ' ↩'}.get(it.status, '')
+            mark = {'applied': ' ✅', 'failed': ' ❌', 'rejected': ' ✖', 'undone': ' ↩', 'skipped': ' ⏭'}.get(it.status, '')
             lines.append(f'{it.seq}. {it.title}' + (f' —— {it.reason}' if it.reason else '') + mark)
         if prop.status == 'pending':
-            lines.append(f'\n回复「/ai 同意全部」或「/ai 同意 1-5,8」执行, 「/ai 不要 3」放弃某条; '
-                         f'执行后可以「/ai 撤销整理 {prop.id}」。只改你自己的飞书客户端, 不会给别人发消息。')
+            lines.append(f'\n在这个私聊回「/ai 同意 #{prop.id} 全部」或「/ai 同意 #{prop.id} 1-5,8」执行, '
+                         f'「/ai 不要 #{prop.id} 3」放弃某条; 执行后可以「/ai 撤销整理 #{prop.id}」。'
+                         f'只改你自己的飞书客户端, 不会给别人发消息。')
         return '\n'.join(lines)
 
     # ---- 执行与撤销 ----
@@ -254,7 +301,10 @@ class OrganizeStore:
             raise ValueError(f'没有整理方案 #{proposal_id}')
         out = []
         for it in self.items(proposal_id):
-            if it.seq not in seqs or it.status in ('applied', 'undone'):
+            if it.seq not in seqs or it.status in ('applied', 'undone', 'skipped'):
+                continue
+            if it.kind not in self.kinds:
+                out.append((it.seq, f'没打开「{kind_label(it.kind)}」这类改动, 不执行'))
                 continue
             params = json.loads(it.params or '{}')
             try:
@@ -262,6 +312,9 @@ class OrganizeStore:
                 self._set(ProposalItem, it.id, status='applied', snapshot=json.dumps(snap, ensure_ascii=False),
                           applied_at=datetime.now(), error='')
                 out.append((it.seq, '已执行'))
+            except Skip as e:
+                self._set(ProposalItem, it.id, status='skipped', error=str(e)[:500])
+                out.append((it.seq, f'跳过: {e}'))
             except Exception as e:
                 self._set(ProposalItem, it.id, status='failed', error=repr(e)[:500])
                 out.append((it.seq, f'失败: {e}'))
@@ -278,7 +331,7 @@ class OrganizeStore:
         return n
 
     def undo(self, proposal_id: int, ops: FeishuOps) -> list:
-        """撤销已执行的条目, 倒序还原。"""
+        """撤销已执行的条目, 倒序还原; 执行之后本人又手动改过的不覆盖。"""
         out = []
         for it in reversed(self.items(proposal_id)):
             if it.status != 'applied':
@@ -319,13 +372,13 @@ class OrganizeStore:
         try:
             for cid, old in snap['chats'].items():
                 row = s.get(ChatProfile, cid)
-                if row is None:
-                    continue
+                if row is None or row.group_id != snap['group_id']:
+                    continue  # 执行之后本人又改过这个会话的分类: 不动
                 if old is None:
                     row.group_id, row.attention, row.confirmed = 0, '', 0
                 else:
                     row.group_id, row.attention, row.confirmed = old
-            if snap['created']:
+            if snap['created'] and not s.query(ChatProfile).filter(ChatProfile.group_id == snap['group_id']).count():
                 s.query(ChatGroup).filter(ChatGroup.id == snap['group_id']).delete()
             elif snap['group']:
                 g = s.get(ChatGroup, snap['group_id'])
@@ -334,29 +387,28 @@ class OrganizeStore:
         finally:
             s.close()
 
-    # 飞书标签跟着分类走: 成员 = 本地这个分类的全部会话 + 方案里的 + 读得到的原有成员。飞书不支持往已有标签里加会话,
-    # 有同名标签时删掉按并集重建; 读标签成员的接口不可靠, 所以不能只靠它, 本地分类才是准的
+    # 飞书标签跟着分类走, 只管本程序建的(记在分类的 feishu_label_id 里)。成员以本地分类为准: 读标签成员的接口不可靠,
+    # 往已有标签里加会话也不支持, 所以自己的标签删掉按"本地分类的全部会话 + 方案里的"重建。
+    # 用户自己的标签(包括同名的)一律不动: 有同名的就跳过这一条
     def _apply_label(self, p, ops):
         g = self.chats.group(p['group'])
         labels = ops.labels()
-        old_id = (g.feishu_label_id if g and g.feishu_label_id in labels else '') or \
-            next((i for i, n in labels.items() if n == p['group']), '')
+        own = g.feishu_label_id if g and g.feishu_label_id in labels else ''
+        if not own and p['group'] in labels.values():
+            raise Skip(f'飞书里已有你自己建的标签「{p["group"]}」, 不动它; 要合并请自己在飞书里加会话')
         local = [r['chat_id'] for r in self.chats.view() if g and r['group_id'] == g.id]
-        try:
-            remote = ops.label_items(old_id) if old_id else []
-        except Exception:
-            remote = []
-        old_members = list(dict.fromkeys([*remote, *[c for c in local if c not in p['chat_ids']]]))
-        members = list(dict.fromkeys([*old_members, *local, *p['chat_ids']]))
-        if old_id:
-            ops.delete_label(old_id)
+        old_members = [c for c in local if c not in p['chat_ids']] if own else []
+        members = list(dict.fromkeys([*local, *p['chat_ids']]))
+        if own:
+            ops.delete_label(own)
         new_id = ops.create_label(p['group'], members)
         if g:
             self.chats.update_group(g.id, feishu_label_id=new_id)
-        return {'old_id': old_id, 'old_members': old_members, 'new_id': new_id}
+        return {'old_id': own, 'old_members': old_members, 'new_id': new_id}
 
     def _undo_label(self, p, snap, ops):
-        if snap.get('new_id'):
+        labels = ops.labels()
+        if snap.get('new_id') in labels:
             ops.delete_label(snap['new_id'])
         restored = ops.create_label(p['group'], snap['old_members']) if snap.get('old_id') else ''
         g = self.chats.group(p['group'])
@@ -370,7 +422,7 @@ class OrganizeStore:
         return {'had': had}
 
     def _undo_pin(self, p, snap, ops):
-        if not snap.get('had'):
+        if not snap.get('had') and p['chat_id'] in ops.pins():
             ops.unpin([p['chat_id']])
 
     def _apply_unpin(self, p, ops):
@@ -380,8 +432,13 @@ class OrganizeStore:
         return {'had': p['chat_id'] in before, 'index': before.index(p['chat_id']) if p['chat_id'] in before else -1}
 
     def _undo_unpin(self, p, snap, ops):
-        if snap.get('had'):
-            ops.pin([p['chat_id']])
+        if not snap.get('had') or p['chat_id'] in ops.pins():
+            return  # 本来就没置顶, 或者本人已经重新置顶了
+        ops.pin([p['chat_id']])
+        cur = [c for c in ops.pins() if c != p['chat_id']]
+        idx = snap.get('index', -1)
+        if 0 <= idx < len(cur):  # 放回原来的位置(新置顶会排到最后)
+            ops.order(cur[:idx] + [p['chat_id']] + cur[idx:])
 
     def _apply_pin_order(self, p, ops):
         before = ops.pins()
@@ -400,26 +457,36 @@ class OrganizeStore:
         return {'had': had}
 
     def _undo_flag(self, p, snap, ops):
-        if not snap.get('had'):
+        if not snap.get('had') and p['msg_id'] in ops.flags():
             ops.flag([p['msg_id']], on=False)
 
     def _apply_mute(self, p, ops):
+        """只给读得到"现在会提醒"的会话设免打扰; 读不到状态的跳过, 撤销时也不会误解除本来就免打扰的。"""
         before = ops.remind(p['chat_ids'])
-        todo = [c for c in p['chat_ids'] if before.get(c) is not False]
+        todo = [c for c in p['chat_ids'] if before.get(c) is True]
+        if not todo:
+            raise Skip('这些会话已经免打扰, 或者读不到提醒状态')
         ops.mute(todo)
         return {'muted': todo}
 
     def _undo_mute(self, p, snap, ops):
-        ops.mute(snap.get('muted') or [], on=False)
+        now = ops.remind(snap.get('muted') or [])
+        ops.mute([c for c in snap.get('muted') or [] if now.get(c) is False], on=False)  # 本人又解除了的不动
 
 
-def context(storage, client, owner_id: str) -> str:
+CONTEXT_CHATS = 150
+
+
+def context(storage, client, owner_id: str, kinds=None) -> str:
     """给数字人写方案用的现状: 全部会话(信号、当前分类和建议)、已有的分类、飞书置顶顺序和标签、找本人还没回的消息。"""
     from . import digest
     cs = groups.ChatStore(storage)
     ops = FeishuOps(client) if client else None
     lines = ['会话(名字 | chat_id | 类型 | 人数 | 30天消息/本人发言/@本人 | 置顶/免打扰 | 当前分类(关注度, 来源) | 画像建议):']
-    for r in sorted(cs.view(), key=lambda r: -(r['msgs'] or 0)):
+    rows = sorted(cs.view(), key=lambda r: -(r['msgs'] or 0))
+    if len(rows) > CONTEXT_CHATS:  # 太多时只列活跃的和还没分类的, 免得提示词过长
+        rows = [r for r in rows if r['msgs'] or not r['group']][:CONTEXT_CHATS]
+    for r in rows:
         kind = {1: '私聊' + ('·机器人' if r['peer_bot'] else ''), 2: '群', 3: '话题群'}.get(r['chat_type'], '?')
         flags = '/'.join(x for x, on in (('置顶', r['feishu_pinned']), ('免打扰', r['feishu_muted'])) if on) or '-'
         lines.append(f"- {r['name'] or '(未命名)'} | {r['chat_id']} | {kind} | {r['members'] or ''} | "
@@ -429,14 +496,17 @@ def context(storage, client, owner_id: str) -> str:
     gs = cs.groups()
     lines.append('\n已有的分类: ' + ('; '.join(f"{g.name}({groups.ATTENTION[g.attention]}{'、私人' if g.private else ''})"
                                          for g in gs) or '还没有'))
+    kinds = set(KIND_ORDER) if kinds is None else set(kinds)
     if ops:
         try:
             names = {r['chat_id']: r['name'] for r in cs.view()}
-            lines.append('飞书置顶(按顺序): ' + '、'.join(names.get(c, c) for c in ops.pins()))
-            lines.append('飞书标签: ' + ('、'.join(ops.labels().values()) or '没有'))
+            if kinds & {'pin', 'unpin', 'pin_order'}:
+                lines.append('飞书置顶(按顺序): ' + '、'.join(names.get(c, c) for c in ops.pins()))
+            if 'label' in kinds:
+                lines.append('飞书标签: ' + ('、'.join(ops.labels().values()) or '没有'))
         except Exception as e:
             lines.append(f'(读飞书置顶/标签失败: {e!r})')
-    data = digest.briefing_data(storage, owner_id, client=client)
+    data = digest.briefing_data(storage, owner_id, client=client) if 'flag' in kinds else {'unreplied': []}
     if data['unreplied']:
         lines.append('\n最近找本人还没回的消息(可以建议标记, flag 里要写 msg_id, 用 larkx messages <chat_id> 查):')
         lines += [f"- {u['time']} 「{u['chat_name']}」{u['sender_name']}: {u['content']}" for u in data['unreplied']]

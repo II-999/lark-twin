@@ -136,6 +136,7 @@ class ChatGroup(Base):
     private = Column(Integer, default=0)
     keywords = Column(Text, default='[]')          # 简单关注时这些词出现也算和本人有关
     position = Column(Integer, default=0)
+    feishu_label_id = Column(String(32), default='')  # 整理方案给这个分类建的飞书标签(只管自己建的)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

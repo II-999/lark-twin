@@ -37,7 +37,7 @@ uv venv && uv pip install -e .
 | `LARKX_TRIGGER_OWNER_ONLY` | 只有本人能唤起，默认开（设 `false` 才允许所有人唤起）。只在唤起白名单为空时起作用；用户想让少数几个人也能叫起数字人，不改它，用 `larkx whitelist add` 加人 |
 | `LARKX_DENY_REPLY` | 没权限的人想唤起（私聊发 `/ai`、群里 @ 本人发 `/ai`）时 daemon 自动引用回复的一句话，不经过 agent。默认"你没有权限唤起{owner}的 lark-twin"（`{owner}` 是用户的名字）；用户不想回就设成空 `LARKX_DENY_REPLY=`。`LARKX_DENY_REPLY_COOLDOWN` 是同一会话同一人多少秒内只回一次，默认 600 |
 | `LARKX_CHAT_GROUPS` / `LARKX_RETENTION_ARCHIVE_DAYS` / `LARKX_RETENTION_LIGHT_DAYS` | 默认都关，不用主动问。用户嫌会话太多、想让每日回顾只看重要的会话，再打开 `LARKX_CHAT_GROUPS`；想自动删旧消息再设保留天数（0 = 一直保留，要先打开分类）。设之前先 `larkx prune --dry-run` 给用户看会删多少 |
-| `LARKX_ORGANIZE` | 默认关。用户想让数字人帮忙整理飞书会话（分类、标签、置顶、免打扰）时打开，要先打开 `LARKX_CHAT_GROUPS`。方案只私信给本人，同意后才执行，都能撤销 |
+| `LARKX_ORGANIZE` / `LARKX_ORGANIZE_ITEMS` | 默认关。用户想让数字人帮忙整理飞书会话时打开，要先打开 `LARKX_CHAT_GROUPS`。`LARKX_ORGANIZE_ITEMS` 默认只提分类、置顶、免打扰；用户要的话再加「标记」「标签」（标签只管程序建的，不动用户自己的）。方案只私信给本人，在私聊里同意后才执行，都能撤销 |
 | `LARKX_BACKFILL_DAYS` / `LARKX_BRIEFING_AT` / `LARKX_MEMORY_STRUCTURED` | 默认都关。用户想让数字人一开始就了解过去的工作，设回填天数（如 30，先 `larkx backfill --dry-run` 给用户看规模）；想每天早上收简报，设 `LARKX_BRIEFING_AT=09:00`；想按字段管理记忆再打开结构化记忆（手写的 `MEMORY.md` 会改由代码生成，先和用户确认） |
 
 `.env` 里写了 key 时，执行 `chmod 600 .env`。不要把 key 的内容输出到对话里。

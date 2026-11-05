@@ -157,8 +157,10 @@ larkx messages <chat_id> --since 24h --json                  # 只看最近一�
 
 ## 整理方案
 
+只有打开了 `LARKX_ORGANIZE` 才能用，没打开时命令会直接拒绝，告诉本人即可。
+
 - 整理会话的例行任务里：按提示写好 JSON，`larkx organize submit downloads/organize.json` 提交，系统会私信给本人，你不用发。
-- 本人在私聊里回「同意 1-5,8」「全部同意」「第 3 条不要」「撤销」时，分别用 `larkx organize apply --items 1-5,8`、`apply`、`reject --items 3`、`undo <编号>`。只有本人发起的轮次能执行。
+- 本人在**私聊**里回「同意 #3 1-5,8」「同意 #3 全部」「不要 #3 4」「撤销整理 #3」时，分别用 `larkx organize apply 3 --items 1-5,8`、`apply 3 --items 全部`、`reject 3 --items 4`、`undo 3`。方案编号和条目都要写明，本人没说编号就先问是哪个方案。只能在本人私聊里由本人发起时执行，群里说的不算。
 - 本人说「整理一下我的会话」时用 `larkx organize propose`。
 
 ## 长期记忆的字段（打开结构化记忆时）

@@ -96,8 +96,9 @@ class Maintenance:
         else:
             from . import Event
             owner_chat = self.d.notifier.owner_chat()
-            text = BUILDERS[job.name](self.d.cfg, self.d.storage, datetime.now(), str(self.d.auth.user_id),
-                                      client=self.d.client, owner_chat=owner_chat)
+            # 生成提示词会读飞书(置顶、标签、标记), 放到线程里, 不挡住事件循环
+            text = await asyncio.to_thread(BUILDERS[job.name], self.d.cfg, self.d.storage, datetime.now(),
+                                           str(self.d.auth.user_id), client=self.d.client, owner_chat=owner_chat)
             if job.kind == 'report':
                 if not owner_chat:
                     self._failed(run, '找不到本人私聊, 发不了汇报')
