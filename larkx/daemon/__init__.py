@@ -169,6 +169,7 @@ class Daemon:
                 return
         elif cmd == 'clear':
             self._drain_inbox()
+            self._mark_owner_stop()
             await self.session.reset()
             if not rest:
                 await self._reply(chat_id, '✅ 已开启新会话(长期记忆保留)', root_id)
@@ -352,6 +353,11 @@ class Daemon:
                 logger.warning(f'处理控制请求失败: {e!r}')
             await asyncio.sleep(1)
 
+    def _mark_owner_stop(self):
+        """开新会话会打断正在跑的这一轮: 和 /stop 一样算本人打断, 例行任务不告警、不重跑。"""
+        if getattr(self.session, 'busy', False):
+            self._owner_stopped = True
+
     async def _owner_interrupt(self) -> bool:
         """本人要求停止当前这一轮(/stop、网页"停止")。记下来, 例行任务就不按失败告警和重跑。"""
         stopped = await self.session.interrupt()
@@ -366,6 +372,7 @@ class Daemon:
             return ('已停止当前任务' if stopped else '当前没有在处理的任务') + (f', 清空 {n} 条排队消息' if n else '')
         if action == 'clear':
             self._drain_inbox()
+            self._mark_owner_stop()
             await self.session.reset()
             return '已开启新会话(长期记忆保留)'
         if action.startswith('job:'):

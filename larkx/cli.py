@@ -1081,7 +1081,7 @@ def cmd_prune(args):
             return _fail(args, '--chat 要和 --days 一起用')
         store = jobs.JobStore(st)
         vac = store.get_state('prune')
-        res = retention.run(load_config(), st, dry_run=args.dry_run, state=vac)
+        res = retention.run(load_config(), st, dry_run=args.dry_run, state=vac, owner_id=_owner_id())
         if not args.dry_run:
             store.put_state('prune', vac)
         text = retention.summary(res, args.dry_run)

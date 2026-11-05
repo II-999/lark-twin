@@ -361,3 +361,29 @@ def test_listener_leaves_messages_unread_by_default(tmp_path, fake_client):
     assert asyncio.run(lst.on_message(msg)) and marked == []
     cfg['mark_read'] = True
     assert asyncio.run(lst.on_message({**msg, 'msg_id': 'x2', 'position': 10})) and len(marked) == 1
+
+
+def test_added_columns_migrated(tmp_path):
+    """跑过第一版的库: chat_profiles 已经存在但没有 suggested_at, 启动时补上列。"""
+    import sqlite3
+    db = tmp_path / 'old.db'
+    Storage(f'sqlite:///{db}')
+    con = sqlite3.connect(db)
+    con.execute('ALTER TABLE chat_profiles DROP COLUMN suggested_at')                # 模拟第一版的表
+    con.execute("INSERT INTO chat_profiles (chat_id, name) VALUES ('g1', '项目群')")
+    con.commit()
+    con.close()
+    st = Storage(f'sqlite:///{db}')
+    from larkx.storage.models import ChatProfile
+    s = st.Session()
+    assert s.get(ChatProfile, 'g1').suggested_at is None
+    s.close()
+    Storage(f'sqlite:///{db}')                                                    # 再启动一次不报错
+
+
+def test_mentions_name_case_insensitive(tmp_path):
+    st = Storage(f'sqlite:///{tmp_path}/c.db')
+    t = int(time.time())
+    st.save_message({'msg_id': 'a', 'chat_id': 'g1', 'chat_type': 2, 'from_id': '300', 'content': '@alice 看下',
+                     'create_time': t - 10}, sender_name='李四')
+    assert [r['msg_id'] for r in st.mentions('100', 'Alice', t - 3600)] == ['a']

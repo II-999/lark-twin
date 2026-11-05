@@ -16,6 +16,7 @@ from datetime import datetime
 
 from sqlalchemy import case, func, or_
 
+from .storage import mentioned
 from .storage.models import Chat, ChatGroup, ChatProfile, Message
 
 ATTENTION = {'focus': '重点关注', 'light': '简单关注', 'archive': '只存不看'}
@@ -40,15 +41,6 @@ def parse_attention(text: str) -> str:
     if not key:
         raise ValueError(f'关注度只能是 重点关注 / 简单关注 / 只存不看(或 focus / light / archive), 不认识 {text!r}')
     return key
-
-
-def at_owner(content_data: str, content: str, owner_id: str, owner_name: str = '') -> bool:
-    """这条消息是不是 @ 了本人: 入库时记下的 @ 列表(_larkx_mention_ids)里有本人, 或者正文里有 @本人名字。"""
-    try:
-        ids = (json.loads(content_data or '{}') or {}).get('_larkx_mention_ids') or []
-    except (ValueError, AttributeError):
-        ids = []
-    return str(owner_id) in {str(x) for x in ids} or bool(owner_name and f'@{owner_name}' in (content or ''))
 
 
 def action_words(cfg: dict) -> tuple:
@@ -274,7 +266,7 @@ class ChatStore:
             for cid, data, content in (s.query(Message.chat_id, Message.content_data, Message.content)
                                        .filter(Message.create_time >= since_ts, Message.sender_id != str(owner_id),
                                                or_(*rough))):
-                if cid in out and at_owner(data, content, owner_id, owner_name):
+                if cid in out and mentioned(data, content, owner_id, owner_name):
                     out[cid]['at_me'] += 1
             # 私聊对象: 出现最多的非本人发送者
             peers = (s.query(Message.chat_id, Message.sender_id, func.count().label('n'))

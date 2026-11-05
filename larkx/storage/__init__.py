@@ -20,13 +20,30 @@ def _json_default(o):
     return str(o)
 
 
-def mentioned(row, user_id: str, name: str = '') -> bool:
-    """群消息是不是 @ 了本人: 入库时记下的 @ 列表里有本人 id, 或者正文里有 @本人名字。"""
+# create_all 只建新表不加列: 表已经存在、后来才加的列在这里补上(列名, 类型)
+ADDED_COLUMNS = {'chat_profiles': [('suggested_at', 'DATETIME')]}
+
+
+def _add_columns(engine):
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    for table, cols in ADDED_COLUMNS.items():
+        if not insp.has_table(table):
+            continue
+        have = {c['name'] for c in insp.get_columns(table)}
+        with engine.begin() as conn:
+            for name, typ in cols:
+                if name not in have:
+                    conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {typ}'))
+
+
+def mentioned(content_data: str, content: str, user_id: str, name: str = '') -> bool:
+    """消息是不是 @ 了本人: 入库时记下的 @ 列表里有本人 id, 或者正文里有 @本人名字(英文名不分大小写, 和 LIKE 一致)。"""
     try:
-        ids = (json.loads(row.content_data or '{}') or {}).get('_larkx_mention_ids') or []
+        ids = (json.loads(content_data or '{}') or {}).get('_larkx_mention_ids') or []
     except (ValueError, AttributeError):
         ids = []
-    return str(user_id) in {str(x) for x in ids} or bool(name and f'@{name}' in (row.content or ''))
+    return str(user_id) in {str(x) for x in ids} or bool(name and f'@{name}'.lower() in (content or '').lower())
 
 
 class Storage:
@@ -35,6 +52,7 @@ class Storage:
         self.url = url or cfg['storage_url']
         self.engine = create_engine(self.url, pool_pre_ping=True)
         Base.metadata.create_all(self.engine)
+        _add_columns(self.engine)
         # 方法返回的对象在会话关闭后还要读属性, 提交时不让它们过期
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
@@ -442,8 +460,8 @@ class Storage:
             if name:
                 cond.append(Message.content.like(f'%@{name}%'))
             rows = []
-            for r in q.filter(or_(*cond)).order_by(Message.create_time):
-                if r.chat_type == 1 or mentioned(r, user_id, name):
+            for r in q.filter(or_(*cond)).order_by(Message.create_time).yield_per(500):  # 分批读, 不一次读进全部候选
+                if r.chat_type == 1 or mentioned(r.content_data, r.content, user_id, name):
                     rows.append(r)
                     if len(rows) >= limit:
                         break
