@@ -136,6 +136,8 @@ def test_daemon_schedules_due_task(tmp_path, monkeypatch):
     obj.rule_store = RuleStore(st)
     obj.auth = SimpleNamespace(user_id='100')
     obj.cfg = {'memory_review_hour': -1}
+    from larkx.daemon.maintenance import Maintenance
+    obj.maintenance = Maintenance(obj)
     monkeypatch.setattr(d, 'SCHEDULER_INTERVAL', 0)
 
     async def one_round():

@@ -107,6 +107,9 @@ async function loadChats() {
 const chatLabel = (id, name) => name || chatNames[id] || (id ? `会话 ${id}` : '');
 
 const KIND = { message: '消息', task: '任务', say: '终端指令', system: '维护', report: '汇报', web: '网页' };
+const ATT = { focus: '重点关注', light: '简单关注', archive: '只存不看' };
+const RUN = { queued: '排队', running: '运行中', ok: '完成', failed: '失败', skipped: '跳过', interrupted: '中断' };
+const runTag = r => r && r.status ? h('span', { class: 'tag' + (['failed', 'interrupted'].includes(r.status) ? ' bad' : '') }, RUN[r.status] || r.status) : h('span', { class: 'muted' }, '还没跑过');
 // daemon: 不经过数字人、由 daemon 直接做的(没权限的人想唤起时的自动回复、触发时在那条消息上加的表情回复)
 const ACTOR = { agent: '数字人', daemon: '自动回复' };
 const STATUS = { pending: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消', expired: '已过期' };
@@ -228,6 +231,7 @@ async function viewOverview() {
   const tiles = h('div', { class: 'tiles' });
   $main.append(tiles);
   const now = card('现在');
+  const life = card('例行任务');
   const chartCard = card('最近 24 小时');
   const recent = card('最近的对话');
   let chartDrawn = false;
@@ -239,6 +243,11 @@ async function viewOverview() {
       tile(o.tasks_pending, '待执行任务'), tile(o.takeovers.length, '接管中'), tile(o.memory_files.length, '记忆文件'));
     put(now, h('h2', {}, '现在'), turnCard(o),
       o.takeovers.length ? h('div', { class: 'meta', style: 'margin-top:10px' }, '接管中:', o.takeovers.map(t => h('span', { class: 'tag' }, `${chatLabel(t.chat_id)} 到 ${fmt(t.until, false)}`))) : null);
+    const L = o.lifecycle || {}, att = L.attention || {};
+    put(life, h('h2', {}, '例行任务', h('span', { class: 'grow' }), h('a', { href: '#jobs', style: 'font-weight:400' }, '全部')),
+      L.chat_groups ? h('div', { class: 'meta' }, Object.entries(ATT).map(([k, v]) => h('span', { class: 'tag' }, `${v} ${att[k] || 0}`)),
+        h('a', { href: '#chats' }, '管理会话')) : null,
+      L.jobs ? jobsTable(L.jobs.filter(j => j.enabled)) : null);
     if (!chartDrawn) { chartCard.append(hourlyChart(o.hourly).node); chartDrawn = true; }
   });
   every(15000, async () => {
@@ -586,9 +595,105 @@ async function viewCommand() {
     h('p', { class: 'muted', style: 'margin-bottom:0' }, '这些操作也可以在飞书里发 /ai /stop、/ai /clear 完成。'));
 }
 
+// ---- 会话分类 ----
+
+async function viewChats() {
+  page('会话', h('span', { class: 'muted' }, '分类和关注度决定分身怎么对待每个会话，改了立即生效'));
+  if (!(await api('/api/groups')).enabled) {
+    card(null, h('p', { class: 'sec', style: 'margin:0' }, '会话分类没有打开（.env 里设 LARKX_CHAT_GROUPS=true 后重启服务）。打开后每天会给会话画像、建议分类，每日回顾按关注度只看重点和简单关注的会话。'));
+    return;
+  }
+  card(null, h('div', { class: 'rule' }, '重点关注：每日回顾每条都看、提炼进记忆；简单关注：只挑和你有关的（@你、提到你负责的事或分类关键词）；只存不看：存档可查，不进回顾，设了保留天数时按保留期清理。飞书里的免打扰不影响关注度。'));
+  const groupsCard = card('分类');
+  const q = h('input', { type: 'text', placeholder: '按名字筛选', style: 'flex:1;min-width:200px' });
+  const filters = { all: '全部', focus: '重点关注', light: '简单关注', archive: '只存不看', suggested: '还没确认', muted: '飞书免打扰' };
+  let filter = 'all', rows = [], gs = { groups: [] };
+  const tabs = h('div', { class: 'row' });
+  const table = h('div');
+  card('会话', h('div', { class: 'row', style: 'margin-bottom:10px' }, tabs, q), table);
+
+  function drawGroups() {
+    const name = h('input', { type: 'text', placeholder: '新分类名', style: 'width:160px' });
+    const att = attSelect('light');
+    put(groupsCard, h('h2', {}, '分类', h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, `未分类 ${gs.unassigned} 个（按画像建议生效）`)),
+      gs.groups.length ? h('table', {}, h('tbody', {}, gs.groups.map(g => h('tr', {},
+        h('td', {}, h('b', {}, g.name), g.private ? h('span', { class: 'tag', style: 'margin-left:6px' }, '私人') : null),
+        h('td', {}, attSelect(g.attention, false, v => act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'PUT', body: { attention: v } }); load(); }, '已更新'))),
+        h('td', { class: 'muted' }, `${g.chats} 个会话`), h('td', { class: 'muted' }, g.keywords.join('、')),
+        h('td', {}, h('button', { class: 'btn small danger', onclick: () => confirm(`删除分类「${g.name}」? 分类里的会话变成未分类`) &&
+          act(async () => { gs = await api(`/api/groups/${g.id}`, { method: 'DELETE' }); load(); }, '已删除') }, '删除')))))) : h('div', { class: 'empty' }, '还没有分类，可以在这里自己建。每天的会话画像会给出建议的分类，见下面的会话列表。'),
+      h('div', { class: 'row', style: 'margin-top:10px' }, name, att, h('button', { class: 'btn small primary', onclick: () => name.value.trim() &&
+        act(async () => { gs = await api('/api/groups', { method: 'POST', body: { name: name.value.trim(), attention: att.value } }); load(); }, '已建分类') }, '建分类')));
+  }
+
+  function attSelect(value, follow = false, onchange) {
+    const s = h('select', {}, follow ? h('option', { value: '' }, typeof follow === 'string' ? follow : '跟分类') : null, Object.entries(ATT).map(([k, v]) => h('option', { value: k }, v)));
+    s.value = value; if (onchange) s.addEventListener('change', () => onchange(s.value));
+    return s;
+  }
+
+  function draw() {
+    put(tabs, Object.entries(filters).map(([k, v]) => h('button', { class: 'btn small' + (filter === k ? ' primary' : ''), onclick: () => { filter = k; draw(); } }, v)));
+    const text = q.value.trim();
+    const shown = rows.filter(r => (filter === 'all' || r.attention === filter || (filter === 'suggested' && !r.confirmed) || (filter === 'muted' && r.feishu_muted))
+      && (!text || (r.name || '').includes(text)));
+    put(table, shown.length ? h('table', {}, h('thead', {}, h('tr', {}, ['会话', '分类', '关注度', '30 天', '依据'].map(t => h('th', {}, t)))),
+      h('tbody', {}, shown.slice(0, 300).map(r => {
+        const g = h('select', {}, h('option', { value: 0 }, r.confirmed ? '未分类' : `未分类（建议：${r.suggested_group || '-'}）`), gs.groups.map(x => h('option', { value: x.id }, x.name)));
+        g.value = r.group_id || 0;
+        g.addEventListener('change', () => act(async () => { await api(`/api/chats/${encodeURIComponent(r.chat_id)}/group`, { method: 'PUT', body: { group_id: Number(g.value) } }); load(); }, '已调整'));
+        const followLabel = r.attention_source === '单独设置' ? '跟分类' : `${r.group ? '跟分类' : '按建议'}：${ATT[r.attention]}`;
+        const a = attSelect(r.attention_source === '单独设置' ? r.attention : '', followLabel, v => act(async () => {
+          await api(`/api/chats/${encodeURIComponent(r.chat_id)}/group`, { method: 'PUT', body: { attention: v } }); load(); }, '已调整'));
+        return h('tr', {},
+          h('td', {}, h('b', {}, r.name || '(未命名)'), ' ', r.chat_type === 1 ? h('span', { class: 'tag' }, r.peer_bot ? '机器人' : '私聊') : null,
+            r.feishu_pinned ? h('span', { class: 'tag' }, '置顶') : null, r.feishu_muted ? h('span', { class: 'tag' }, '免打扰') : null, r.private ? h('span', { class: 'tag' }, '私人') : null),
+          h('td', {}, g),
+          h('td', {}, a),
+          h('td', { class: 'muted' }, `${r.msgs} 条 · 你 ${r.owner_msgs} · @你 ${r.at_me}`),
+          h('td', { class: 'muted' }, r.reason));
+      }))) : h('div', { class: 'empty' }, '没有符合条件的会话'));
+  }
+
+  async function load() {
+    [rows, gs] = await Promise.all([api('/api/chat-profiles'), api('/api/groups')]);
+    drawGroups(); draw();
+  }
+  q.addEventListener('input', draw);
+  await load();
+}
+
+// ---- 例行任务 ----
+
+function jobsTable(jobs, refresh) {
+  return h('table', {}, h('tbody', {}, jobs.map(j => h('tr', {},
+    h('td', {}, h('b', {}, j.title), h('div', { class: 'muted mono', style: 'font-size:12px' }, j.name)),
+    h('td', {}, j.enabled ? runTag(j.last) : h('span', { class: 'tag' }, '已关闭')),
+    h('td', { class: 'muted' }, j.last && j.last.created_at ? `上次 ${fmt(j.last.created_at)}` : ''),
+    h('td', { class: 'muted' }, j.next ? `下次 ${fmt(j.next)}` : ''),
+    h('td', { class: 'muted', style: 'max-width:420px' }, j.last ? (j.last.error || j.last.summary || '').slice(0, 120) : ''),
+    h('td', {}, j.enabled ? h('button', { class: 'btn small', onclick: () => confirm(`现在运行「${j.title}」?`) &&
+      act(async () => { const r = await api(`/api/jobs/${j.name}/run`, { method: 'POST' }); refresh && refresh(); return r; }, r => r.result) }, '立即运行') : null)))));
+}
+
+async function viewJobs() {
+  page('例行任务', h('span', { class: 'muted' }, '会话画像、每日回顾、每周整理记忆、清理，每次运行都有记录'));
+  const top = card('任务');
+  const log = card('运行记录');
+  async function load() {
+    const d = await api('/api/jobs');
+    put(top, h('h2', {}, '任务'), jobsTable(d.jobs, load));
+    put(log, h('h2', {}, '运行记录'), d.runs.length ? h('table', {}, h('tbody', {}, d.runs.map(r => h('tr', {},
+      h('td', { class: 'muted', style: 'white-space:nowrap' }, fmt(r.created_at)), h('td', {}, r.job), h('td', {}, runTag(r)),
+      h('td', { class: 'muted' }, r.trigger === 'manual' ? '手动' : ''),
+      h('td', {}, clamp(r.error || r.summary || '')))))) : h('div', { class: 'empty' }, '还没有运行记录'));
+  }
+  every(15000, load);
+}
+
 // ---- 路由 ----
 
-const VIEWS = { overview: viewOverview, conversations: viewConversations, activity: viewActivity, tasks: viewTasks,
+const VIEWS = { overview: viewOverview, conversations: viewConversations, chats: viewChats, jobs: viewJobs, activity: viewActivity, tasks: viewTasks,
   takeovers: viewTakeovers, whitelist: viewWhitelist, settings: viewSettings, memory: viewMemory, persona: viewPersona, logs: viewLogs, command: viewCommand };
 
 async function route() {

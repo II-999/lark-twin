@@ -90,7 +90,7 @@ class Storage:
         finally:
             s.close()
 
-    def get_messages(self, chat_id: str, anchor: str=None, limit=50, before_ts: int=None):
+    def get_messages(self, chat_id: str, anchor: str=None, limit=50, before_ts: int=None, since_ts: int=None):
         s = self.Session()
         try:
             q = s.query(Message).filter(Message.chat_id == str(chat_id))
@@ -98,6 +98,8 @@ class Storage:
                 q = q.filter(Message.anchor == anchor)
             if before_ts:
                 q = q.filter(Message.create_time < before_ts)
+            if since_ts:
+                q = q.filter(Message.create_time >= since_ts)
             rows = q.order_by(desc(Message.create_time)).limit(limit).all()
             rows.reverse()
             return rows
@@ -111,6 +113,35 @@ class Storage:
             return chat.name if chat else ''
         finally:
             s.close()
+
+    # ---- 清理 ----
+
+    def prune_messages(self, before_ts: int, chat_ids, dry_run=False) -> int:
+        """删掉这些会话里 create_time 早于 before_ts 的消息, 返回条数。
+        会话列表(chats)和补收位置不动: 会话名还要用, 补收只往前推进, 删掉的旧消息不会被拉回来。"""
+        ids = [str(c) for c in chat_ids]
+        n = 0
+        s = self.Session()
+        try:
+            for i in range(0, len(ids), 500):
+                q = s.query(Message).filter(Message.create_time > 0, Message.create_time < int(before_ts),
+                                            Message.chat_id.in_(ids[i:i + 500]))
+                n += q.count() if dry_run else q.delete(synchronize_session=False)
+            if not dry_run:
+                s.commit()
+            return n
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def vacuum(self):
+        """SQLite 删除后文件不会变小, 整理一次把空间还给磁盘; 其他数据库什么都不做。"""
+        if self.engine.dialect.name != 'sqlite':
+            return
+        with self.engine.connect().execution_options(isolation_level='AUTOCOMMIT') as conn:
+            conn.exec_driver_sql('VACUUM')
 
     def session_get(self, session_key: str):
         s = self.Session()

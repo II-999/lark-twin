@@ -36,6 +36,7 @@ uv venv && uv pip install -e .
 | `LARKX_REPLY_SIGNATURE` | 用户希望数字人发出的消息带上 AI 标识时填，比如 `（AI 代回）`。默认不加 |
 | `LARKX_TRIGGER_OWNER_ONLY` | 只有本人能唤起，默认开（设 `false` 才允许所有人唤起）。只在唤起白名单为空时起作用；用户想让少数几个人也能叫起数字人，不改它，用 `larkx whitelist add` 加人 |
 | `LARKX_DENY_REPLY` | 没权限的人想唤起（私聊发 `/ai`、群里 @ 本人发 `/ai`）时 daemon 自动引用回复的一句话，不经过 agent。默认"你没有权限唤起{owner}的 lark-twin"（`{owner}` 是用户的名字）；用户不想回就设成空 `LARKX_DENY_REPLY=`。`LARKX_DENY_REPLY_COOLDOWN` 是同一会话同一人多少秒内只回一次，默认 600 |
+| `LARKX_CHAT_GROUPS` / `LARKX_RETENTION_ARCHIVE_DAYS` / `LARKX_RETENTION_LIGHT_DAYS` | 默认都关，不用主动问。用户嫌会话太多、想让每日回顾只看重要的会话，再打开 `LARKX_CHAT_GROUPS`；想自动删旧消息再设保留天数（0 = 一直保留，要先打开分类）。设之前先 `larkx prune --dry-run` 给用户看会删多少 |
 
 `.env` 里写了 key 时，执行 `chmod 600 .env`。不要把 key 的内容输出到对话里。
 
