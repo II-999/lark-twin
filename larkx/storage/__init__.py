@@ -19,6 +19,15 @@ def _json_default(o):
     return str(o)
 
 
+def mentioned(row, user_id: str, name: str = '') -> bool:
+    """群消息是不是 @ 了本人: 入库时记下的 @ 列表里有本人 id, 或者正文里有 @本人名字。"""
+    try:
+        ids = (json.loads(row.content_data or '{}') or {}).get('_larkx_mention_ids') or []
+    except (ValueError, AttributeError):
+        ids = []
+    return str(user_id) in {str(x) for x in ids} or bool(name and f'@{name}' in (row.content or ''))
+
+
 class Storage:
     def __init__(self, url: str=None):
         cfg = load_config()
@@ -419,10 +428,17 @@ class Storage:
         try:
             q = s.query(Message).filter(Message.create_time >= since_ts, Message.sender_id != str(user_id),
                                         Message.direction == 'in')
-            cond = [Message.chat_type == 1]
+            # 群里的 @: 正文里的 @名字, 或者入库时记下的 @ 列表(_larkx_mention_ids)里有本人。
+            # 先用 LIKE 粗筛, 再解析确认: content_data 里别处带着本人 id(比如合并转发的记录)不算
+            cond = [Message.chat_type == 1, Message.content_data.like(f'%"{user_id}"%')]
             if name:
                 cond.append(Message.content.like(f'%@{name}%'))
-            rows = q.filter(or_(*cond)).order_by(Message.create_time).limit(limit).all()
+            rows = []
+            for r in q.filter(or_(*cond)).order_by(Message.create_time):
+                if r.chat_type == 1 or mentioned(r, user_id, name):
+                    rows.append(r)
+                    if len(rows) >= limit:
+                        break
             out = []
             for r in rows:
                 replied = s.query(Message.id).filter(Message.chat_id == r.chat_id, Message.sender_id == str(user_id),
