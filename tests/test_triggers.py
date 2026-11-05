@@ -8,7 +8,8 @@ ME = '100'
 
 def cfg(**triggers):
     c = copy.deepcopy(DEFAULTS)
-    c['triggers'].update(triggers)
+    # owner_only 默认开; 这里默认关掉, 好测别人发的消息走哪些规则, 要测它的用例显式传 owner_only=True
+    c['triggers'].update({'owner_only': False, **triggers})
     return c
 
 
@@ -83,9 +84,10 @@ def test_group_at_only_env(monkeypatch):
 
 def test_owner_only_env(monkeypatch):
     from larkx.config import load_config
-    assert DEFAULTS['triggers']['owner_only'] is False
+    # 默认开: 安全优先, 只有本人能唤起
+    assert DEFAULTS['triggers']['owner_only'] is True
     monkeypatch.delenv('LARKX_TRIGGER_OWNER_ONLY', raising=False)
-    assert load_config()['triggers']['owner_only'] is False
+    assert load_config()['triggers']['owner_only'] is True
     monkeypatch.setenv('LARKX_TRIGGER_OWNER_ONLY', 'true')
     assert load_config()['triggers']['owner_only'] is True
     monkeypatch.setenv('LARKX_TRIGGER_OWNER_ONLY', 'false')
@@ -112,8 +114,8 @@ def test_owner_only_on():
 
 
 def test_owner_only_off_matches_group_rules():
-    """开关关闭(默认)时和群聊规则一致: 私聊照旧, 群里别人要 @ 本人, 本人不用 @。"""
-    c = cfg(prefix='/ai')
+    """开关关闭时和群聊规则一致: 私聊照旧, 群里别人要 @ 本人, 本人不用 @。"""
+    c = cfg(prefix='/ai', owner_only=False)
     assert c['triggers']['owner_only'] is False
     assert should_handle(msg('/ai 你好', chat_type=1), c, ME)
     assert not should_handle(msg('/ai 你好', chat_type=2), c, ME)

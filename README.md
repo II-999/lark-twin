@@ -46,7 +46,7 @@ cp .env.example .env          # 选择 claude / codex，并填写启动命令
 | `/ai /takeover 2h 目标` · `/ai /release` | 接管 · 结束接管当前会话。接管期间对方说的话都由它回复 |
 | `/ai /stop` · `/ai /clear` | 打断当前任务 · 开启新会话，长期记忆保留 |
 
-以 `/` 开头的命令只认你本人。想让数字人只听你一个人的，在 `.env` 设 `LARKX_TRIGGER_OWNER_ONLY=true`：别人发的 `/ai`（私聊、群聊，包括 @你 的）都不理会；你主动接管的会话、定时任务、`larkx say` 照常。
+以 `/` 开头的命令只认你本人。默认数字人只听你一个人的（`LARKX_TRIGGER_OWNER_ONLY` 默认 `true`，安全优先）：别人发的 `/ai`（私聊、群聊，包括 @你 的）都不理会；你主动接管的会话、定时任务、`larkx say` 照常。想放行少数几个人，用下面的唤起白名单；想让所有人都能唤起，在 `.env` 设 `LARKX_TRIGGER_OWNER_ONLY=false`。
 
 **谁能唤起它（唤起白名单）**：你自己一直能。白名单里有人时，只有你和白名单里的人能唤起，别人的 `/ai` 一律不理；白名单为空时按上面的 `LARKX_TRIGGER_OWNER_ONLY`。群里照旧要 @你。白名单里的人和其他人一样按访客对待，不会拿到你的权限。在控制台的"白名单"页搜名字添加（同名的看头像和部门区分），或者用 `larkx whitelist add <名字或 user_id>`，两边是同一份名单，改了立即生效，不用重启。数字人自己改不了白名单：它调用 `larkx whitelist add/remove` 会被拒绝并通知你。
 

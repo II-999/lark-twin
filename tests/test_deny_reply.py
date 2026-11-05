@@ -23,7 +23,7 @@ DEFAULT_TEXT = '你没有权限唤起本人的 lark-twin'
 
 def cfg(**triggers):
     c = copy.deepcopy(DEFAULTS)
-    c['triggers'].update({'prefix': '/ai', **triggers})
+    c['triggers'].update({'prefix': '/ai', 'owner_only': False, **triggers})
     return c
 
 

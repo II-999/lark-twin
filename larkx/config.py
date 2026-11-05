@@ -82,8 +82,9 @@ DEFAULTS = {
         "keywords": [],
         # 群聊/话题群里别人发的消息必须 @ 本人才触发(本人自己发的、私聊不受影响)
         "group_at_only": True,
-        # 只有本人能唤起: 打开后别人发的消息(私聊、群聊, 包括 @ 本人的)一律不触发; 接管、定时任务、larkx say 不受影响
-        "owner_only": False,
+        # 只有本人能唤起(默认开, 安全优先): 别人发的消息(私聊、群聊, 包括 @ 本人的)一律不触发; 接管、定时任务、larkx say 不受影响。
+        # 只在唤起白名单为空时起作用; 想让别人也能唤起就加白名单, 或者设 LARKX_TRIGGER_OWNER_ONLY=false
+        "owner_only": True,
     },
 }
 

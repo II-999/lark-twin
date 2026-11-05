@@ -34,7 +34,7 @@ uv venv && uv pip install -e .
 | `LARKX_TRIGGER_PREFIX` | 触发前缀，默认 `/ai` |
 | `LARKX_ALLOW_SELF` | 默认 `true`：用户自己发的 `/ai` 也会交给数字人，这是给它下指令、`/stop`、`/clear`、`/takeover` 的前提。没有触发前缀时，用户自己的消息一律不触发 |
 | `LARKX_REPLY_SIGNATURE` | 用户希望数字人发出的消息带上 AI 标识时填，比如 `（AI 代回）`。默认不加 |
-| `LARKX_TRIGGER_OWNER_ONLY` | 只有本人能唤起，默认关。只在唤起白名单为空时起作用；用户想让少数几个人也能叫起数字人，不改它，用 `larkx whitelist add` 加人 |
+| `LARKX_TRIGGER_OWNER_ONLY` | 只有本人能唤起，默认开（设 `false` 才允许所有人唤起）。只在唤起白名单为空时起作用；用户想让少数几个人也能叫起数字人，不改它，用 `larkx whitelist add` 加人 |
 | `LARKX_DENY_REPLY` | 没权限的人想唤起（私聊发 `/ai`、群里 @ 本人发 `/ai`）时 daemon 自动引用回复的一句话，不经过 agent。默认"你没有权限唤起{owner}的 lark-twin"（`{owner}` 是用户的名字）；用户不想回就设成空 `LARKX_DENY_REPLY=`。`LARKX_DENY_REPLY_COOLDOWN` 是同一会话同一人多少秒内只回一次，默认 600 |
 
 `.env` 里写了 key 时，执行 `chmod 600 .env`。不要把 key 的内容输出到对话里。

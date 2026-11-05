@@ -102,6 +102,7 @@ def _daemon(tmp_path, fake_client, monkeypatch):
     obj = d.Daemon.__new__(d.Daemon)
     obj.cfg = json.loads(json.dumps(DEFAULTS))
     obj.cfg['triggers']['prefix'] = '/ai'
+    obj.cfg['triggers']['owner_only'] = False      # 默认开; 这里测别人发的 /ai 能进收件箱
     obj.storage = Storage(f'sqlite:///{tmp_path}/d.db')
     from larkx.event_rules import RuleStore
     obj.rule_store = RuleStore(obj.storage)
