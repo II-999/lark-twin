@@ -192,8 +192,6 @@ def cmd_send(args):
         if not sep or not uid.isdigit() or not name.strip():
             return _fail(args, '--mention 格式为数字 user_id:显示名')
         mentions.append({'type':'at','user_id':uid,'name':name})
-    if mentions and getattr(args, 'markdown', False):
-        return _fail(args, '--mention 暂不支持与 --markdown 同时使用；请按纯文本发送')
     cfg = load_config()
     prefix = (cfg.get('triggers') or {}).get('prefix') or ''
     st = Storage()
@@ -226,13 +224,20 @@ def cmd_send(args):
             from .protocol import richtext
             plain = richtext.to_plain_text(text)
     if mentions:
-        segments=[]
-        for mention in mentions:
-            segments.extend([mention, {'type':'text','text':' '}])
-        segments.append({'type':'text','text':text})
-        msg_id=client.send_message({'kind':'text','segments':segments},args.chat_id,
-                                  root_id=args.root,keep_unread=cfg['keep_unread'])
-        text=' '.join('@'+m['name'] for m in mentions)+' '+text
+        # 正文里写了 "@显示名" 的就地变成 @, 没写到的放在最前面(见 protocol/mentions.py)
+        from .protocol import mentions as mention_mod
+        from .protocol.proto import builders
+        if getattr(args, 'markdown', False):
+            msg = {'kind': 'markdown', 'text': text, 'mentions': mentions}
+        else:
+            msg = {'kind': 'text', 'segments': mention_mod.text_segments(text, mentions)}
+        msg_id = client.send_message(msg, args.chat_id, root_id=args.root, keep_unread=cfg['keep_unread'])
+        # 审计、抄送、落库里的纯文本: @ 写成 "@显示名", 位置和发出去的一致
+        if getattr(args, 'markdown', False):
+            plain = builders.plain_text(msg)
+            text = mention_mod.lead_text(mention_mod.markdown_unplaced(text, mentions)) + text
+        else:
+            text = builders.plain_text(msg)
     elif getattr(args, 'markdown', False):
         msg_id = client.send_markdown(text, args.chat_id, root_id=args.root, keep_unread=cfg['keep_unread'])
     else:
@@ -1004,7 +1009,8 @@ def main():
                    help='按 markdown 富文本发送: 代码块(```)、有序/无序列表、标题、引用、**加粗**、*斜体*、链接; 不带此选项时按纯文本发送')
     p.add_argument('--json', action='store_true')
     p.set_defaults(fn=cmd_send)
-    p.add_argument('--mention', action='append', default=[], metavar='USER_ID:NAME', help='真实 @对象，可重复')
+    p.add_argument('--mention', action='append', default=[], metavar='USER_ID:NAME',
+                   help='真实 @对象，可重复; 可以和 -m 一起用。正文里写了 "@显示名" 的就地变成 @, 没写到的放在正文最前面')
     p = sub.add_parser('forward', help='转发消息: 逐条转发到一个或几个会话, 或者 --merge 合并成一条聊天记录转发')
     p.add_argument('msg_id', nargs='+', help='要转发的消息 id(larkx messages / history 里的 msg_id), 可以写几个, 按顺序转发')
     p.add_argument('--to', action='append', required=True, metavar='CHAT_ID', help='转发到哪个会话, 可重复')

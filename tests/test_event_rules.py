@@ -301,8 +301,15 @@ def test_local_message_rule_pipeline(monkeypatch, fake_client):
     assert len(storage.list_actions()) == 1
 
 
-def test_mention_markdown_combination_fails_explicitly(monkeypatch):
+def test_mention_with_markdown_sends_rich_text_mention(monkeypatch, fake_client):
     from larkx import cli
+    monkeypatch.setattr(cli, 'LarkAuth', lambda: object())
+    monkeypatch.setattr(cli, 'LarkClient', lambda _: fake_client)
+    sent = []
+    fake_client.send_message = lambda msg, *a, **kw: sent.append(msg) or 'sent'
     args = argparse.Namespace(chat_id='target', text=['**task**'], root=None,
                               json=True, mention=['300:TestBot'], markdown=True)
-    assert cli.cmd_send(args) == 1
+    assert cli.cmd_send(args) == 0
+    assert sent == [{'kind': 'markdown', 'text': '**task**', 'mentions': [{'type': 'at', 'user_id': '300', 'name': 'TestBot'}]}]
+    row = Storage().get_messages('target')[-1]
+    assert row.content == '@TestBot task' and json.loads(row.content_data)['_larkx_mention_ids'] == ['300']

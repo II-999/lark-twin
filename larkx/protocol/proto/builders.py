@@ -27,6 +27,8 @@ def build_send_message_packet(text: str, chat_id: str, request_id: str, root_id:
 #                                                          {'type': 'at', 'user_id', 'name'}
 #   {'kind': 'markdown', 'text'}                           markdown 富文本(代码块、列表、标题、引用、
 #                                                          加粗/斜体、链接, 语法见 protocol/richtext.py)
+#   {'kind': 'markdown', 'text', 'mentions': [...]}        带 @ 的 markdown, mention 是 {'user_id', 'name'}:
+#                                                          正文里的 "@name" 就地变成 @, 没写到的放最前面(见 protocol/mentions.py)
 #   {'kind': 'image', 'key'}                               图片, key 是上传后拿到的 img_ 开头的 key
 #   {'kind': 'file', 'key', 'name', 'size', 'mime'}        文件, key 是上传后拿到的 file_ 开头的 key
 MESSAGE_KINDS = ('text', 'markdown', 'image', 'file')
@@ -59,13 +61,18 @@ def text_segments(msg: dict) -> list:
 
 
 def has_mentions(msg: dict) -> bool:
+    if msg.get('kind') == 'markdown':
+        return any(str(m.get('user_id') or '').isdigit() for m in msg.get('mentions') or ())
     return msg.get('kind') == 'text' and any(s['type'] == 'at' for s in text_segments(msg))
 
 
 def without_mentions(msg: dict) -> dict:
-    """把 @ 写成普通文字 "@名字"(不再 @ 到人); 不是带 @ 的文字消息原样返回。"""
+    """把 @ 写成普通文字 "@名字"(不再 @ 到人); 不带 @ 的消息原样返回。
+    markdown 去掉 mention 的 user_id, 构造时就写成文字(位置和真 @ 一样)。"""
     if not has_mentions(msg):
         return msg
+    if msg.get('kind') == 'markdown':
+        return {**msg, 'mentions': [{'name': m.get('name') or ''} for m in msg.get('mentions') or ()]}
     return {'kind': 'text', 'text': plain_text(msg)}
 
 
@@ -76,8 +83,8 @@ def plain_text(msg: dict) -> str:
     if msg.get('kind') == 'file':
         return f"[文件] {msg.get('name') or ''}".strip()
     if msg.get('kind') == 'markdown':
-        from .. import richtext
-        return richtext.to_plain_text(msg.get('text') or '')
+        from .. import mentions
+        return mentions.markdown_plain_text(msg.get('text') or '', msg.get('mentions') or ())
     return ''.join('@' + s['name'] if s['type'] == 'at' else s['text'] for s in text_segments(msg))
 
 
@@ -121,9 +128,16 @@ def message_request(msg: dict, chat_id: str, root_id: str=None, thread_chat: boo
         return req
     if kind == 'markdown':
         # 富文本(post): markdown 转成 richText 元素树(语法和服务端的约束见 richtext 模块开头)
-        from .. import richtext
+        # 带 @ 时 AT 元素记进 richText.atIds, 被 @ 的人列进 atUserIdList(和文字消息、客户端发的 post 一致)
+        from .. import mentions
         req.type = TYPE_POST
-        richtext.build_rich_text(req.content.richText, str(msg.get('text') or ''))
+        rich = req.content.richText
+        mentions.build_rich_text(rich, str(msg.get('text') or ''), msg.get('mentions') or ())
+        E = L.entities.RichTextElement
+        for el_id in rich.atIds:
+            uid = int(E.AtProperty.FromString(rich.elements.dictionary[el_id].property).userId)
+            if uid not in req.atUserIdList:
+                req.atUserIdList.append(uid)
         return req
     # 文字: 富文本, 每段一个元素; @ 是 AT 元素(属性里是 userId 和显示的 "@名字"), 元素 id 记进 atIds,
     # 被 @ 的人还要列进 atUserIdList, 对方才会收到 @ 提醒(和客户端发出的 @ 消息结构一致, 实测过)
