@@ -331,6 +331,19 @@ def test_mentions_query(tmp_path):
     assert [(r['msg_id'], r['kind'], r['replied']) for r in rows] == [('a', 'p2p', False), ('b', 'at', True)]
 
 
+def test_mentions_structured_at_only(tmp_path):
+    """群里结构化的 @(不带名字的富文本 @)也算; 合并转发的记录里带着本人 id 的不算。"""
+    st = Storage(f'sqlite:///{tmp_path}/m2.db')
+    t = int(time.time())
+    st.save_message({'msg_id': 'e', 'chat_id': 'g1', 'chat_type': 2, 'from_id': '300', 'content': '看下这个',
+                     'content_data': {'_larkx_mention_ids': ['100']}, 'create_time': t - 70}, sender_name='李四')
+    st.save_message({'msg_id': 'f', 'chat_id': 'g1', 'chat_type': 2, 'from_id': '300', 'content': '[合并转发]',
+                     'content_data': {'messages': [{'fromId': '100', 'content': '之前说的'}]}, 'create_time': t - 60},
+                    sender_name='李四')
+    assert [r['msg_id'] for r in st.mentions('100', '', t - 3600)] == ['e']
+    assert [r['msg_id'] for r in st.mentions('100', '', t - 3600, limit=1)] == ['e']
+
+
 def test_listener_leaves_messages_unread_by_default(tmp_path, fake_client):
     from larkx.config import DEFAULTS
     from larkx.daemon.listener import Listener
