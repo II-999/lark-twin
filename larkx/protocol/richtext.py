@@ -3,8 +3,12 @@
 结构和约束都是按内部网关上实测出来的(2026-10, 见 tests 与 git 记录):
 - 根是一个 DOCS(22), 下面挂块级元素: 段落 P(3)、无序/有序列表 UL(26)/OL(27)/LI(28)、
   引用 QUOTE(29)、代码块 CODE_BLOCK(31)。标题 H1~H6 服务端会降级成段落, 发送侧直接按段落发。
-- 行内只有文字 TEXT(1)、加粗 B(7)、斜体 I(8)、下划线 U(9); 链接 A(6) 只能是裸 URL,
-  飞书 IM 没有"自定义文字的超链接"([文字](url) 里的 url 会被服务端丢掉)。
+- 行内的加粗、斜体和飞书客户端一样, 是普通文字 TEXT(1) 带 style(fontWeight: bold / fontStyle: italic),
+  同时登记进 elements.styles / styleRefs。不能用老的 B(7)、I(8) 元素: 服务端照收, 但客户端和 Open API
+  都不认, 客户端复制出来是"[当前版本不支持查看这部分内容]", Open API 读到的是 {"tag": "unknown"}(2026-11 实测)。
+- 链接 A(6) 的属性是 AnchorProperty: 裸链接 href、content、textContent 都是 url(同客户端);
+  [文字](url) 是 content=文字、isCustom、scene=CUSTOM_EDIT 的自定义文字链接。只填 field 1 的话
+  Open API 读到的是 href、text 都为空的 a。
 - 行内代码元素 CODE(30) 服务端会整条剔除(文字保留), 所以 `` `code` `` 只保留文字。
 - 容器元素也要显式带 property(序列化成空 bytes); richText.innerText 必须显式设置,
   缺了这两处服务端直接 400("%PB payload in packet unmarshal failed")。
@@ -12,13 +16,18 @@
 
 支持的 markdown 语法是个够用的小子集: 围栏代码块(```lang)、标题、引用、有序/无序列表、
 段落里的 **加粗**、*斜体*、`行内代码`(降级成普通文字)、[文字](http(s) 链接) 和裸链接。
+下划线按 CommonMark 的规则, 两边紧挨着字母、数字或汉字时不算标记: ppe_kg_repo_kb、callback_url 原样保留。
 """
 import re
 
 # RichTextElement.Tag
-TEXT, P, A, B, I, U, QUOTE, CODE_BLOCK = 1, 3, 6, 7, 8, 9, 29, 31
+TEXT, P, A, QUOTE, CODE_BLOCK = 1, 3, 6, 29, 31
 UL, OL, LI, DOCS = 26, 27, 28, 22
 H_TAGS = (23, 24, 25, 44, 45, 46)
+# 行内样式(RichTextElement.style), 和飞书客户端发出的一样
+BOLD = {'fontWeight': 'bold'}
+ITALIC = {'fontStyle': 'italic'}
+ANCHOR_CUSTOM_EDIT = 3  # AnchorProperty.Scene.CUSTOM_EDIT: 自定义文字的链接
 
 # CodeBlockProperty.Language(V1 枚举, 只有这些); 不认识的语言按 SHELL 发
 CODE_LANGS = {
@@ -36,32 +45,46 @@ HEADING_RE = re.compile(r'^(#{1,6})\s+(.*)$')
 QUOTE_RE = re.compile(r'^>\s?(.*)$')
 UL_ITEM_RE = re.compile(r'^\s*[-*+]\s+(.*)$')
 OL_ITEM_RE = re.compile(r'^\s*(\d{1,9})[.)]\s+(.*)$')
-# 行内: **bold** __bold__ *italic* _italic_ `code` [text](url)
+# 行内: **bold** __bold__ *italic* _italic_ `code` [text](url) 裸链接。
+# 标记内侧不能是空白("2 * 3 * 4" 不是斜体); 下划线的外侧不能紧挨字母、数字或汉字(\w), 单词中间的 _ 不算标记
 INLINE = re.compile(
-    r'(\*\*.+?\*\*|__.+?__|(?<!\*)\*(?!\*)[^*]+?\*(?!\*)|(?<!_)_(?!_)[^_]+?_(?!_)'
+    r'(\*\*(?=\S).+?(?<=\S)\*\*|(?<!\w)__(?=\S).+?(?<=\S)__(?!\w)'
+    r'|(?<!\*)\*(?![*\s])[^*\n]*?(?<=\S)\*(?!\*)|(?<![\w_])_(?![_\s])[^_\n]*?(?<=\S)_(?![\w_])'
     r'|`.+?`|\[[^]\n]{1,400}\]\(https?://[^\s)]{1,4000}\)|https?://[^\s\x00-\x1f\x7f<>"]{1,4000})'
 )
-URL = re.compile(r'^https?://', re.I)
+LINK_MD = re.compile(r'^\[([^]]*)\]\((.*)\)$')
+
+
+def _inline_tokens(text: str):
+    """把一行文本切成行内片段: (kind, 文字, url), kind 是 text / bold / italic / link / url。
+    re.split 带一个捕获组, 奇数下标是匹配到的标记, 偶数下标是夹在中间的普通文字(哪怕它恰好以 _ 开头结尾)。"""
+    for n, part in enumerate(INLINE.split(text or '')):
+        if not part:
+            continue
+        if n % 2 == 0:
+            yield 'text', part, ''
+        elif part[:2] in ('**', '__'):
+            yield 'bold', part[2:-2], ''
+        elif part[0] in '*_':
+            yield 'italic', part[1:-1], ''
+        elif part[0] == '`':
+            # 行内代码 IM 不支持, 只保留文字
+            yield 'text', part[1:-1], ''
+        elif part[0] == '[':
+            m = LINK_MD.match(part)
+            if m and m.group(1).strip():
+                yield 'link', m.group(1), m.group(2)
+            elif m:
+                yield 'url', m.group(2), m.group(2)
+            else:
+                yield 'text', part, ''
+        else:
+            yield 'url', part, part
 
 
 def _plain_inline(text: str) -> str:
     """行内 markdown 去掉标记后的纯文字([文字](url) 保留文字和 url)。"""
-    out = []
-    for part in INLINE.split(text):
-        if not part:
-            continue
-        if part.startswith('**') and part.endswith('**') or part.startswith('__') and part.endswith('__'):
-            out.append(part[2:-2])
-        elif part.startswith('*') and part.endswith('*') or part.startswith('_') and part.endswith('_'):
-            out.append(part[1:-1])
-        elif part.startswith('`') and part.endswith('`'):
-            out.append(part[1:-1])
-        elif part.startswith('['):
-            m = re.match(r'^\[([^]]*)\]\((.*)\)$', part)
-            out.append(f'{m.group(1)} {m.group(2)}' if m else part)
-        else:
-            out.append(part)
-    return ''.join(out)
+    return ''.join(f'{s} {url}' if kind == 'link' else s for kind, s, url in _inline_tokens(text))
 
 
 def to_plain_text(markdown: str) -> str:
@@ -103,8 +126,9 @@ class _Tree:
         self.rich = rich
         self._n = 0
         self.inner = []
+        self._style_ids = {}
 
-    def node(self, tag, prop=b'', children=()):
+    def node(self, tag, prop=b'', children=(), style=None):
         self._n += 1
         eid = str(self._n)
         el = self.rich.elements.dictionary[eid]
@@ -112,7 +136,19 @@ class _Tree:
         el.property = prop   # 容器也要显式带 property
         if children:
             el.childIds.extend(children)
+        for name, value in (style or {}).items():
+            self._style(el, name, value)
         return eid
+
+    def _style(self, el, name, value):
+        """元素带上一项样式, 并像客户端那样登记: elements.styles 里每种(名字, 值)一条,
+        styleRefs[名字] 里每个带这项样式的元素记一次它在 styles 里的下标。"""
+        el.style[name] = value
+        els = self.rich.elements
+        if (name, value) not in self._style_ids:
+            self._style_ids[(name, value)] = len(els.styles)
+            els.styles.add(name=name, value=value)
+        els.styleRefs[name].styleIds.append(self._style_ids[(name, value)])
 
     def block(self, tag, prop=b'', children=()):
         eid = self.node(tag, prop, children)
@@ -135,38 +171,18 @@ def build_rich_text(rich, markdown: str):
         return E.TextProperty(content=s).SerializeToString()
 
     def add_inline(parent_children, text):
-        """把一行文本的行内 markdown 展开成 TEXT/B/I/A 叶子, 追加到 parent_children。"""
-        for part in INLINE.split(text):
-            if not part:
-                continue
-            if (part.startswith('**') and part.endswith('**')) or (part.startswith('__') and part.endswith('__')):
-                parent_children.append(tree.node(B, text_prop(part[2:-2])))
-                tree.inner.append(part[2:-2])
-            elif (part.startswith('*') and part.endswith('*')) or (part.startswith('_') and part.endswith('_')):
-                parent_children.append(tree.node(I, text_prop(part[1:-1])))
-                tree.inner.append(part[1:-1])
-            elif part.startswith('`') and part.endswith('`'):
-                # 行内代码 IM 不支持, 只保留文字
-                parent_children.append(tree.node(TEXT, text_prop(part[1:-1])))
-                tree.inner.append(part[1:-1])
-            elif part.startswith('['):
-                m = re.match(r'^\[([^]]*)\]\((.*)\)$', part)
-                if m:
-                    label, url = m.group(1), m.group(2)
-                    if label:
-                        parent_children.append(tree.node(TEXT, text_prop(label + ' ')))
-                        tree.inner.append(label + ' ')
-                    parent_children.append(tree.node(A, E.LinkProperty(url=url).SerializeToString()))
-                    tree.inner.append(url)
-                else:
-                    parent_children.append(tree.node(TEXT, text_prop(part)))
-                    tree.inner.append(part)
-            elif URL.match(part):
-                parent_children.append(tree.node(A, E.LinkProperty(url=part).SerializeToString()))
-                tree.inner.append(part)
+        """把一行文本的行内 markdown 展开成 TEXT(加粗、斜体是带 style 的 TEXT)和 A 叶子, 追加到 parent_children。"""
+        for kind, s, url in _inline_tokens(text):
+            if kind == 'url':
+                prop = E.AnchorProperty(href=url, content=url, textContent=url)
+                parent_children.append(tree.node(A, prop.SerializeToString()))
+            elif kind == 'link':
+                prop = E.AnchorProperty(href=url, content=s, isCustom=True, scene=ANCHOR_CUSTOM_EDIT)
+                parent_children.append(tree.node(A, prop.SerializeToString()))
             else:
-                parent_children.append(tree.node(TEXT, text_prop(part)))
-                tree.inner.append(part)
+                style = BOLD if kind == 'bold' else ITALIC if kind == 'italic' else None
+                parent_children.append(tree.node(TEXT, text_prop(s), style=style))
+            tree.inner.append(s)
 
     def paragraph(line):
         children = []

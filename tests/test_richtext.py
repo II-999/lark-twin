@@ -88,14 +88,47 @@ def test_ordered_and_unordered_lists():
     assert set(ul_ids + ol_ids) <= set(tree[root][2])
 
 
-def test_bold_italic_underline_inline():
+def _styled_texts(r):
+    """[(文字, style)]: 所有 TEXT 叶子, 按元素 id 顺序。"""
+    d = r.content.richText.elements.dictionary
+    return [(E.TextProperty.FromString(d[k].property).content, dict(d[k].style))
+            for k in sorted(d, key=int) if d[k].tag == TEXT]
+
+
+def test_bold_italic_are_styled_text_like_the_client():
+    # 飞书客户端的加粗/斜体是带 style 的 TEXT; 老的 B(7)/I(8) 元素客户端显示成"当前版本不支持查看这部分内容"
     r = _request('**粗** 和 *斜* 还有 __粗2__ _斜2_')
     tree = _tree(r)
-    tags = {t for t, _, _ in tree.values()}
-    assert B in tags and I in tags
-    bold_texts = [E.TextProperty.FromString(p).content for t, p, _ in tree.values() if t == B]
-    italic_texts = [E.TextProperty.FromString(p).content for t, p, _ in tree.values() if t == I]
-    assert sorted(bold_texts) == ['粗', '粗2'] and sorted(italic_texts) == ['斜', '斜2']
+    assert not {B, I, U} & {t for t, _, _ in tree.values()}
+    texts = _styled_texts(r)
+    assert [s for s, st in texts if st == {'fontWeight': 'bold'}] == ['粗', '粗2']
+    assert [s for s, st in texts if st == {'fontStyle': 'italic'}] == ['斜', '斜2']
+    assert [st for s, st in texts if s in (' 和 ', ' 还有 ', ' ')] == [{}, {}, {}]
+    assert r.content.richText.innerText == '粗 和 斜 还有 粗2 斜2'
+
+
+def test_styles_are_registered_like_the_client():
+    # 客户端发的消息: elements.styles 每种样式一条, styleRefs[样式名] 里每个带这项样式的元素记一次下标
+    els = _request('**甲** *乙* **丙**').content.richText.elements
+    assert [(s.name, s.value) for s in els.styles] == [('fontWeight', 'bold'), ('fontStyle', 'italic')]
+    assert {k: list(v.styleIds) for k, v in els.styleRefs.items()} == {'fontWeight': [0, 0], 'fontStyle': [1]}
+    plain = _request('没有样式').content.richText.elements
+    assert not plain.styles and not plain.styleRefs
+
+
+def test_underscores_inside_words_are_not_italic():
+    md = '环境 ppe_kg_repo_kb，变量 callback_url 和 kb_version，_a_b_ 和 x _y_z'
+    r = _request(md)
+    assert _styled_texts(r) == [(md, {})]
+    assert richtext.to_plain_text(md) == md
+    # 两边不挨着字母数字时照常是斜体/加粗, 中文标点旁边也算
+    texts = _styled_texts(_request('（_斜_）__粗__，'))
+    assert ('斜', {'fontStyle': 'italic'}) in texts and ('粗', {'fontWeight': 'bold'}) in texts
+
+
+def test_asterisks_with_inner_spaces_are_not_italic():
+    assert _styled_texts(_request('2 * 3 * 4')) == [('2 * 3 * 4', {})]
+    assert _styled_texts(_request('a ** b ** c')) == [('a ** b ** c', {})]
 
 
 def test_inline_code_degrades_to_plain_text():
@@ -106,11 +139,17 @@ def test_inline_code_degrades_to_plain_text():
 
 
 def test_bare_and_markdown_links():
+    # A(6) 的属性是 AnchorProperty: 裸链接 href/content/textContent 都是 url(同客户端), [文字](url) 是自定义文字的链接
     r = _request('看 https://a.com 和 [飞书](https://b.com)')
     tree = _tree(r)
-    links = [E.LinkProperty.FromString(p) for t, p, _ in tree.values() if t == A]
-    assert sorted(x.url for x in links) == ['https://a.com', 'https://b.com']
-    assert '飞书' in r.content.richText.innerText and 'https://b.com' in r.content.richText.innerText
+    links = [E.AnchorProperty.FromString(tree[k][1]) for k in sorted(tree, key=int) if tree[k][0] == A]
+    assert [(x.href, x.content, x.textContent, x.isCustom, x.scene) for x in links] == [
+        ('https://a.com', 'https://a.com', 'https://a.com', False, 0),
+        ('https://b.com', '飞书', '', True, 3),
+    ]
+    assert r.content.richText.innerText == '看 https://a.com 和 飞书'
+    # 审计用的纯文本里文字和 url 都留着
+    assert richtext.to_plain_text('[飞书](https://b.com)') == '飞书 https://b.com'
 
 
 def test_quote_block():
