@@ -233,3 +233,14 @@ def test_turn_exception_marks_run_failed(tmp_path, monkeypatch, fake_client):
         asyncio.run(obj._handle(ev))
     run = obj.maintenance.store.get(ev.run_id)
     assert run.status == 'failed' and '解析失败' in run.error
+
+
+def test_clear_during_job_is_owner_stop(tmp_path, monkeypatch, fake_client):
+    obj = _daemon(tmp_path, monkeypatch, fake_client)
+    obj.session.busy = True
+
+    async def reset():
+        pass
+    obj.session.reset = reset
+    asyncio.run(obj.control('clear'))
+    assert obj._owner_stopped

@@ -115,7 +115,7 @@ class Maintenance:
         return f"{res['chats']} 个会话; 新会话 {len(res['new'])} 个; 建议有变化 {res['changed']} 个"
 
     def _job_prune(self, run) -> str:
-        return retention.summary(retention.run(self.d.cfg, self.d.storage))  # 不整理数据库文件, 见 retention.run
+        return retention.summary(retention.run(self.d.cfg, self.d.storage, owner_id=str(self.d.auth.user_id)))  # 不整理数据库文件, 见 retention.run
 
     def _failed(self, run, err: str):
         self.store.fail(run.id, err)

@@ -160,3 +160,18 @@ def test_agent_cannot_prune(monkeypatch, st):
     _setup(st)
     assert cli.cmd_prune(_prune_args(days=1, chat=['项目群'])) == 3
     assert len(_ids(st, 'focus')) == 3
+
+
+def test_owner_own_chat_never_pruned(st, monkeypatch):
+    """本人自己的私聊会被建议成只存不看, 但它是指令和汇报的通道, 不删。"""
+    from larkx import notify
+    monkeypatch.setattr(notify, '_load', lambda: {})
+    for d in (1, 40):
+        st.save_message({'msg_id': f'self-{d}', 'chat_id': 'self', 'chat_type': 1, 'from_id': OWNER, 'content': 'x',
+                         'create_time': int(time.time() - d * DAY)}, chat_name='我')
+    groups.ChatStore(st).save_profile('self', OWNER, chat_type=1, peer_id=OWNER, msgs=2)
+    _age_profile(st, 'self', 30)
+    assert groups.ChatStore(st).view(['self'])[0]['attention'] == 'archive'
+    assert retention.plan(A30, st, owner_id=OWNER) == []
+    monkeypatch.setattr(notify, '_load', lambda: {'owner_chat': 'self'})               # 不知道本人 id 时按私聊通道认
+    assert retention.plan(A30, st) == []
