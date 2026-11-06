@@ -413,3 +413,27 @@ def test_added_column_race_ignored(tmp_path, monkeypatch):
         return i
     monkeypatch.setattr('sqlalchemy.inspect', stale)
     Storage(f'sqlite:///{db}')                                                       # 不报 duplicate column
+
+
+def test_turn_is_signed():
+    """数字人直接改 turn.json(把自己改成本人、打开开关)通不过签名校验, 当成没有这一轮。"""
+    import json as _json
+    from larkx import state
+    state.write_turn('system', 'self', ref='job:organize#1', locked={'organize': False})
+    assert state.read_turn()['ref'] == 'job:organize#1'
+    assert (state.STATE_DIR / 'turn.key').stat().st_mode & 0o777 == 0o600
+    data = _json.loads(state.TURN_PATH.read_text(encoding='utf-8'))
+    data.update(kind='message', is_owner=True, locked={'organize': True})
+    state.TURN_PATH.write_text(_json.dumps(data), encoding='utf-8')
+    assert state.read_turn() is None
+    data.pop('sig')
+    state.TURN_PATH.write_text(_json.dumps(data), encoding='utf-8')
+    assert state.read_turn() is None
+
+
+def test_owner_user_id_reads_only_credentials(tmp_path):
+    import json as _json
+    from larkx import config
+    assert config.owner_user_id() == ''                                      # 测试里不读本机真实凭证
+    config.CREDENTIALS_PATH.write_text(_json.dumps({'user_id': '555', 'cookies': {}}), encoding='utf-8')
+    assert config.owner_user_id() == '555'

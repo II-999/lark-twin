@@ -908,10 +908,8 @@ def cmd_say(args):
 
 def _owner_id() -> str:
     """本人的 user_id(读本地凭证, 不联网); 没登录时为空。"""
-    try:
-        return str(LarkAuth().user_id or '')
-    except Exception:
-        return ''
+    from .config import owner_user_id
+    return owner_user_id()
 
 
 def cmd_jobs(args):
@@ -1091,9 +1089,19 @@ def cmd_organize(args):
         return 0
     if not owner_turn:
         return _fail(args, '整理方案只有本人同意后才能执行或撤销', code=3)
-    owner_chat = str(cfg.get('notify_chat') or notify._load().get('owner_chat') or '')
-    if agent and (not owner_chat or str(turn.get('chat_id') or '') != owner_chat):
-        return _fail(args, '整理方案只能在本人私聊里执行或撤销', code=3)
+    if agent:
+        from . import groups
+        from .storage.models import Chat, ChatProfile
+        s = st.Session()
+        try:
+            cid = str(turn.get('chat_id') or '')
+            profiles = {p.chat_id: p for p in s.query(ChatProfile).filter(ChatProfile.chat_id == cid)}
+            chat = s.get(Chat, cid) if cid else None
+        finally:
+            s.close()
+        # 和清理、"不清理"标记用同一个判断: 记下的本人私聊(必须是私聊), 或者私聊对象是本人
+        if not cid or (chat and chat.chat_type not in (0, 1)) or cid not in groups.own_chats(profiles, cfg, _owner_id()):
+            return _fail(args, '整理方案只能在本人私聊里执行或撤销', code=3)
     try:
         if act == 'undo':
             res = store.undo(prop.id, organize.FeishuOps(LarkClient(LarkAuth())))

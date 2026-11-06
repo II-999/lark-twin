@@ -9,7 +9,10 @@ keep_unread), daemon 收到它们时跳过。
 forward/ 下登记 larkx forward 转发出去的消息(每个目标会话那份的 cid, 见 LarkClient.forward_message), daemon 收到它们时
 只入库, 不当成本人下的指令: 发送人是本人, 内容却是转来的, 以触发前缀开头时不能当成本人在叫数字人。
 """
+import hashlib
+import hmac
 import json
+import secrets
 import os
 import re
 import time
@@ -27,12 +30,36 @@ RELAY_TTL = 8 * 86400
 KINDS = ('message', 'task', 'say', 'system', 'report')
 
 
+def _turn_key(create: bool = False) -> bytes:
+    """给 turn.json 签名的密钥: daemon 第一次写的时候生成(只有本人可读), 数字人的工具调用不许读它(见 agent/hooks)。
+    这样数字人直接改 turn.json(把自己改成本人、打开开关)也通不过校验。"""
+    path = STATE_DIR / 'turn.key'
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        if not create:
+            return b''
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_bytes(32)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'wb') as f:
+        f.write(key)
+    return key
+
+
+def _sign(data: dict, key: bytes) -> str:
+    body = json.dumps({k: v for k, v in data.items() if k != 'sig'}, ensure_ascii=False, sort_keys=True)
+    return hmac.new(key, body.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
 def write_turn(kind: str, chat_id: str = '', anchor: str = '', is_owner: bool = False, ref: str = '',
                locked: dict = None):
-    """locked: daemon 自己的配置里数字人不能用环境变量改的几项(见 config.LOCKED_KEYS), 数字人进程里的命令以这里为准。"""
+    """locked: daemon 自己的配置里数字人不能用环境变量改的几项(见 config.LOCKED_KEYS), 数字人进程里的命令以这里为准。
+    整个内容带签名(sig), read_turn 校验不过就当没有这一轮。"""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     data = {'kind': kind, 'chat_id': str(chat_id or ''), 'anchor': anchor or '', 'is_owner': bool(is_owner),
             'ref': str(ref or ''), 'pid': os.getpid(), 'started_at': time.time(), 'locked': locked or {}}
+    data['sig'] = _sign(data, _turn_key(create=True))
     tmp = TURN_PATH.with_suffix('.tmp')
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
     tmp.replace(TURN_PATH)
@@ -47,6 +74,9 @@ def read_turn():
         data = json.loads(TURN_PATH.read_text(encoding='utf-8'))
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+    key = _turn_key()
+    if not key or not isinstance(data, dict) or not hmac.compare_digest(str(data.get('sig') or ''), _sign(data, key)):
+        return None  # 不是 daemon 写的(被改过, 或者没有签名)
     try:
         os.kill(int(data.get('pid') or 0), 0)
     except (OSError, ValueError):
