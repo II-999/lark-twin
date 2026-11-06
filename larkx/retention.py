@@ -29,14 +29,6 @@ VACUUM_ROWS = 10000
 VACUUM_EVERY_DAYS = 7
 
 
-def _own_chats(cfg: dict, owner_id: str, profiles: dict) -> set:
-    from . import notify
-    own = {str(c) for c in (cfg.get('notify_chat'), notify._load().get('owner_chat')) if c}
-    if owner_id:
-        own |= {cid for cid, p in profiles.items() if p.chat_type == 1 and str(p.peer_id or '') == str(owner_id)}
-    return own
-
-
 def plan(cfg: dict, storage, now: float = None, owner_id: str = '') -> list:
     """按关注度算出要删的消息: [(说明, 截止时间, chat_id 列表)]; 什么都不删时为空。"""
     now = time.time() if now is None else now
@@ -48,7 +40,7 @@ def plan(cfg: dict, storage, now: float = None, owner_id: str = '') -> list:
     finally:
         s.close()
     protect = datetime.fromtimestamp(now) - timedelta(days=PROTECT_DAYS)
-    own = _own_chats(cfg, owner_id, profiles)
+    own = groups.own_chats(profiles, cfg, owner_id)
     archive, light = [], []
     for r in groups.ChatStore(storage).view():
         p = profiles.get(r['chat_id'])

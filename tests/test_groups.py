@@ -260,3 +260,17 @@ def test_owner_own_chat_marked_kept(st):
     groups.ChatStore(st).save_profile('self', OWNER, chat_type=1, peer_id=OWNER)
     r = groups.ChatStore(st).view(['self'])[0]
     assert r['attention'] == 'archive' and r['kept'] and '不清理' in r['reason']
+
+
+def test_kept_matches_retention(st, monkeypatch):
+    """界面上的"不清理"和清理时的判断一致: 记下的本人私聊会话也算, 即使画像还看不出来。"""
+    from larkx import notify
+    from larkx.config import DEFAULTS
+    monkeypatch.setattr(notify, '_load', lambda: {'owner_chat': 'p5'})
+    cs = groups.ChatStore(st)
+    cs.save_profile('p5', OWNER, chat_type=1, peer_id='')                   # 私聊对象还没认出来
+    cs.save_profile('p6', OWNER, chat_type=1, peer_id='900')
+    rows = {r['chat_id']: r for r in cs.view(['p5', 'p6'])}
+    assert rows['p5']['kept'] and not rows['p6']['kept']
+    profiles = {cid: cs.profile(cid) for cid in ('p5', 'p6')}
+    assert groups.own_chats(profiles, dict(DEFAULTS)) == {'p5'}

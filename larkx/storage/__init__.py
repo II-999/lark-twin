@@ -38,7 +38,7 @@ def _add_columns(engine):
                 with engine.begin() as conn:
                     conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {typ}'))
             except Exception as e:  # daemon 和 CLI 同时第一次启动: 另一边刚加上了
-                if 'duplicate' not in str(e).lower():
+                if 'duplicate column' not in str(e).lower():
                     raise
 
 
