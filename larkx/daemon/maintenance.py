@@ -96,8 +96,9 @@ class Maintenance:
         else:
             from . import Event
             owner_chat = self.d.notifier.owner_chat()
-            text = BUILDERS[job.name](self.d.cfg, self.d.storage, datetime.now(), str(self.d.auth.user_id),
-                                      client=self.d.client, owner_chat=owner_chat)
+            # 生成提示词会读飞书(置顶、标签、标记), 放到线程里, 不挡住事件循环
+            text = await asyncio.to_thread(BUILDERS[job.name], self.d.cfg, self.d.storage, datetime.now(),
+                                           str(self.d.auth.user_id), client=self.d.client, owner_chat=owner_chat)
             if job.kind == 'report':
                 if not owner_chat:
                     self._failed(run, '找不到本人私聊, 发不了汇报')
@@ -146,6 +147,11 @@ class Maintenance:
                 self.store.put_state('bootstrap', bs)
                 return None
             return f"batch-{bs['next'] + 1}"
+        if job.name == 'organize_init':
+            if int(self.d.cfg.get('backfill_days') or 0) > 0 and jobs.get('bootstrap').when(self.d.cfg):
+                # 初始化记忆之后, 了解了本人的工作再提分类方案
+                return 'once' if self.store.get_state('bootstrap').get('done') else None
+            return 'once' if self.store.last('profile', status=('ok',)) else None  # 没回填: 第一次画像之后
         return None
 
     def _batch_gave_up(self, key: str) -> bool:
@@ -179,6 +185,8 @@ class Maintenance:
             return
         if run.job == 'briefing':
             return self._briefing_done(ev, run, result)
+        if run.job in ('organize', 'organize_init') and result is not None and not result.is_error:
+            return self._organize_done(run, result)
         if result is not None and not result.is_error:
             self.store.finish(run.id, result.text or '')
             if run.job == 'bootstrap' and run.slot.startswith('batch-'):
@@ -203,6 +211,17 @@ class Maintenance:
             self.store.finish(run.id, f'已发出(发出后这一轮报错: {err[:100]})')
             return
         self._failed(run, err)
+
+    def _organize_done(self, run, result):
+        """整理会话这一轮结束: 把数字人提交的方案私信给本人; 没提交说明这次不需要调整。"""
+        from ..organize import OrganizeStore
+        store = OrganizeStore(self.d.storage)
+        props = store.by_source(run.ref)
+        for p in props:
+            if self.d.notifier.send(store.render(p.id)):
+                store.mark_notified(p.id)
+        self.store.finish(run.id, (f"提交了方案 #{', #'.join(str(p.id) for p in props)}; " if props else '没有提交方案; ')
+                          + (result.text or ''))
 
     def _briefing_done(self, ev, run, result):
         """简报这一轮结束: 查审计里有没有真的发到本人私聊; 没发出就由代码直接发数据版兜底。"""

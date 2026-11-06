@@ -79,6 +79,22 @@ def _briefing_at(cfg):
     return (t[0], t[1], None) if t else None
 
 
+def _organize_on(cfg):
+    return bool(cfg.get('chat_groups') and cfg.get('organize'))
+
+
+def _organize_init_on(cfg):
+    return (0, 0, None) if _organize_on(cfg) else None
+
+
+def _organize_at(cfg):
+    """每周整理会话: 和每周整理记忆同一天(没开时周一), 回顾那个钟点的 45 分(没开回顾时 4:45)。"""
+    if not _organize_on(cfg):
+        return None
+    hour, weekday = cfg.get('memory_review_hour', -1), cfg.get('memory_consolidate_weekday', -1)
+    return (hour if 0 <= hour <= 23 else 4, 45, weekday if 0 <= weekday <= 6 else 0)
+
+
 def _after_review(cfg):
     """回顾后半小时清理; 关掉回顾时按 4:30。要打开会话分类并配了保留天数才跑(默认都不删, 手动 larkx prune 随时可用)。"""
     if not cfg.get('chat_groups') or not (int(cfg.get('retention_archive_days') or 0) > 0
@@ -96,6 +112,8 @@ JOBS = [
     Job('briefing', '每日简报', 'report', _briefing_at, grace=3 * 3600),
     Job('backfill', '回填历史', 'local', _backfill_on, once=True, max_attempts=3),
     Job('bootstrap', '初始化记忆', 'agent', _bootstrap_on, once=True),
+    Job('organize_init', '初始整理会话', 'agent', _organize_init_on, once=True),
+    Job('organize', '每周整理会话', 'agent', _organize_at),
 ]
 
 

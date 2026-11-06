@@ -12,7 +12,7 @@ from .. import notify, state
 from .. import whitelist as wl
 from ..agent import SessionCrashed, create_session, ensure_agent_home
 from ..agent.home import commit_agent_home
-from ..config import CREDENTIALS_PATH, DATA_DIR, load_config, with_signature
+from ..config import CREDENTIALS_PATH, DATA_DIR, load_config, locked_values, with_signature
 from ..notify import Notifier
 from ..protocol import AuthExpired, LarkAuth, LarkClient
 from ..storage import ACK_REACTION, Storage
@@ -611,7 +611,7 @@ class Daemon:
     # ---- 交给数字人 ----
 
     async def _run_turn(self, ev: Event, prompt: str):
-        state.write_turn(ev.kind, ev.chat_id, ev.anchor, ev.is_owner, ev.ref)
+        state.write_turn(ev.kind, ev.chat_id, ev.anchor, ev.is_owner, ev.ref, locked=locked_values(self.cfg))
         try:
             return await self.session.ask(prompt)
         finally:

@@ -136,6 +136,7 @@ class ChatGroup(Base):
     private = Column(Integer, default=0)
     keywords = Column(Text, default='[]')          # 简单关注时这些词出现也算和本人有关
     position = Column(Integer, default=0)
+    feishu_label_id = Column(String(32), default='')  # 整理方案给这个分类建的飞书标签(只管自己建的)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -164,6 +165,33 @@ class ChatProfile(Base):
     profiled_at = Column(DateTime)
     suggested_at = Column(DateTime)                   # 建议的关注度最近一次变化的时间(清理的保护期从这里算)
     created_at = Column(DateTime, default=datetime.now)
+
+
+class Proposal(Base):
+    """整理方案: 分身提出、本人同意后执行的一组改动(分类、飞书标签、置顶、标记、免打扰), 每条都能撤销。"""
+    __tablename__ = 'proposals'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now)
+    trigger = Column(String(16), default='manual')   # init | weekly | manual
+    source_ref = Column(String(64), default='', index=True)  # 提交它的那一轮
+    summary = Column(Text, default='')
+    status = Column(String(16), default='pending')   # pending | done | dismissed
+    notified = Column(Integer, default=0)
+
+
+class ProposalItem(Base):
+    __tablename__ = 'proposal_items'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    proposal_id = Column(Integer, index=True)
+    seq = Column(Integer, default=0)                 # 给本人看的编号
+    kind = Column(String(16), default='')            # group | label | pin | unpin | pin_order | flag | mute
+    title = Column(Text, default='')
+    reason = Column(Text, default='')
+    params = Column(Text, default='{}')
+    status = Column(String(16), default='pending')   # pending | applied | failed | rejected | undone
+    error = Column(Text, default='')
+    snapshot = Column(Text, default='{}')            # 执行前的状态, 撤销用
+    applied_at = Column(DateTime)
 
 
 class JobRun(Base):

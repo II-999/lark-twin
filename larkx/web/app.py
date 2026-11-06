@@ -148,7 +148,19 @@ def _lifecycle(st, cfg) -> dict:
     return {'jobs': [{'name': j.name, 'title': j.title, 'once': j.once, 'enabled': j.when(cfg) is not None,
                       'next': jobs.next_time(j, cfg, now), 'last': jobs.describe(store.last(j.name))} for j in jobs.JOBS],
             'chat_groups': bool(cfg.get('chat_groups')), 'attention': att,
-            'backfill': store.get_state('backfill'), 'bootstrap': store.get_state('bootstrap')}
+            'backfill': store.get_state('backfill'), 'bootstrap': store.get_state('bootstrap'),
+            'proposal': _pending_proposal(st)}
+
+
+def _pending_proposal(st):
+    """最新的整理方案里还有没决定的条目时, 总览上提示一下; 没打开整理方案时不提示。"""
+    from .. import organize
+    if not organize.enabled(load_config()):
+        return None
+    store = organize.OrganizeStore(st)
+    prop = store.get()
+    pending = [i for i in store.items(prop.id) if i.status == 'pending'] if prop else []
+    return {'id': prop.id, 'pending': len(pending)} if pending else None
 
 
 @api
@@ -330,6 +342,46 @@ def jobs_api(request: Request):
                      'enabled': job.when(cfg) is not None, 'next': nxt, 'last': jobs.describe(store.last(job.name))})
     return _json({'jobs': rows, 'runs': [jobs.describe(r) for r in store.log(limit=int(request.query_params.get('limit', 30)))],
                   'backfill': store.get_state('backfill'), 'bootstrap': store.get_state('bootstrap')})
+
+
+@api
+def proposals(request: Request):
+    """最近的整理方案和每条的状态; 没打开整理方案时 enabled=false, 列表为空。"""
+    from .. import organize
+    cfg = load_config()
+    if not organize.enabled(cfg):
+        return _json({'enabled': False, 'items': [], 'proposals': []})
+    store = organize.OrganizeStore(Storage())
+    return _json({'enabled': True, 'items': sorted(organize.ITEM_NAMES[k] for k in organize.enabled_kinds(cfg)
+                                                   if k in organize.ITEM_NAMES), 'proposals': [{'id': p.id, 'trigger': p.trigger, 'status': p.status, 'summary': p.summary, 'created_at': p.created_at,
+                   'items': [{'seq': i.seq, 'kind': i.kind, 'title': i.title, 'reason': i.reason, 'status': i.status,
+                              'error': i.error} for i in store.items(p.id)]}
+                  for p in store.list(int(request.query_params.get('limit', 10)))]})
+
+
+@api
+def proposal_item(request: Request):
+    """POST {action: apply|reject|undo, items: [编号]}: 本人在网页上同意、放弃或撤销。"""
+    from .. import organize
+    cfg = load_config()
+    if not organize.enabled(cfg):
+        raise ValueError('整理方案没有打开(LARKX_CHAT_GROUPS 和 LARKX_ORGANIZE)')
+    st, pid, b = Storage(), request.path_params['proposal_id'], request.state.body
+    store = organize.OrganizeStore(st, organize.enabled_kinds(cfg))
+    if not store.get(pid):
+        raise ValueError('没有这个方案')
+    action, seqs = b.get('action'), [int(x) for x in b.get('items') or []]
+    if action in ('apply', 'reject') and not seqs:
+        raise ValueError('要选上至少一条')
+    if action == 'reject':
+        res = [(s, '已放弃') for s in seqs] if store.reject(pid, seqs) else []
+    elif action in ('apply', 'undo'):
+        ops = organize.FeishuOps(_lark())
+        res = store.apply(pid, seqs, ops) if action == 'apply' else store.undo(pid, ops)
+    else:
+        raise ValueError('不支持的操作')
+    st.log_action(actor='human', action='organize', content=f'网页{action} 整理方案 #{pid}: {res}')
+    return _json({'ok': True, 'results': [{'seq': s, 'result': r} for s, r in res]})
 
 
 @api
@@ -736,6 +788,7 @@ def create_app() -> Starlette:
         Route('/api/whitelist/{user_id}', whitelist_item, methods=['DELETE']),
         Route('/api/people', people),
         Route('/api/settings', settings, methods=['GET', 'PUT']),
+        Route('/api/proposals', proposals), Route('/api/proposals/{proposal_id:int}', proposal_item, methods=['POST']),
         Route('/api/memory', memory), Route('/api/memory-issues', memory_issues),
         Route('/api/memory/{name:path}', memory_item, methods=['PUT', 'DELETE']),
         Route('/api/persona', persona, methods=['GET', 'PUT']),

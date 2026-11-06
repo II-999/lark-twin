@@ -59,6 +59,11 @@ DEFAULTS = {
     "bot_action_keywords": "",
     # 结构化记忆: 记忆文件开头写字段(类型、相关的人和群、状态、截止日期), memory/MEMORY.md 改由代码按字段生成; 默认关
     "memory_structured": False,
+    # 整理方案: 分身按本人的工作提出分类、飞书标签、置顶、标记、免打扰的调整, 本人同意哪条执行哪条, 都能撤销。
+    # 要先打开 chat_groups。打开后: 回填并初始化记忆后(没回填就在第一次画像后)提一次, 之后每周一次; 默认关
+    "organize": False,
+    # 整理方案里提哪几类改动(逗号分隔): 分类, 置顶, 免打扰, 标记, 标签。默认只有前三类; 标记、飞书标签要自己加上
+    "organize_items": "分类,置顶,免打扰",
     # 首次启动回填最近多少天的聊天(只回填一次, 之后靠长连接和补收), 回填完接着初始化记忆; 0 = 不回填(默认)
     "backfill_days": 0,
     # 每天几点给本人私聊发工作简报(HH:MM, 如 09:00, 周一附上周回顾); 空或 off 关闭(默认)。超过 3 小时没发出就不发了
@@ -138,7 +143,7 @@ def load_config() -> dict:
         v = os.environ.get("LARKX_" + key.upper())
         if v:
             cfg[key] = v
-    for key in ("mark_read", "keep_unread", "allow_self", "mirror", "chat_groups", "memory_structured"):
+    for key in ("mark_read", "keep_unread", "allow_self", "mirror", "chat_groups", "memory_structured", "organize"):
         if isinstance(cfg.get(key), str):
             cfg[key] = _as_bool(cfg[key])
     # LARKX_AGENT_CLI 是 claude_cli 的旧名
@@ -168,6 +173,26 @@ def load_config() -> dict:
         else:
             triggers[key] = v
     cfg["triggers"] = triggers
+    return cfg
+
+
+# 数字人不能靠自己带环境变量打开的配置: 数字人进程里以 daemon 写进 turn.json 的值为准
+LOCKED_KEYS = ("chat_groups", "organize", "organize_items")
+
+
+def locked_values(cfg: dict) -> dict:
+    return {k: cfg.get(k) for k in LOCKED_KEYS}
+
+
+def trusted_config() -> dict:
+    """load_config(), 但在数字人进程里, LOCKED_KEYS 这几项不信进程环境变量(数字人可以 env LARKX_ORGANIZE=true 再调命令):
+    取 daemon 这一轮写进 turn.json 的值, 读不到就按默认值(关)。"""
+    cfg = load_config()
+    if inside_twin():
+        from . import state
+        locked = (state.read_turn() or {}).get('locked') or {}
+        for k in LOCKED_KEYS:
+            cfg[k] = locked[k] if k in locked else DEFAULTS[k]
     return cfg
 
 

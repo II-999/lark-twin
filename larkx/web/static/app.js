@@ -103,6 +103,8 @@ function card(title, ...kids) {
 
 async function loadChats() {
   try { for (const c of await api('/api/chats')) chatNames[c.chat_id] = c.name; } catch (e) { /* 登录前忽略 */ }
+  // 整理方案没打开时导航里不显示「整理」
+  try { document.getElementById('nav-organize').hidden = !(await api('/api/proposals?limit=1')).enabled; } catch (e) { /* 登录前忽略 */ }
 }
 const chatLabel = (id, name) => name || chatNames[id] || (id ? `会话 ${id}` : '');
 
@@ -251,6 +253,7 @@ async function viewOverview() {
       L.chat_groups ? h('div', { class: 'meta' }, Object.entries(ATT).map(([k, v]) => h('span', { class: 'tag' }, `${v} ${att[k] || 0}`)),
         h('a', { href: '#chats' }, '管理会话')) : null,
       steps.map(t => h('p', { class: 'sec' }, t)),
+      L.proposal ? h('p', {}, h('a', { href: '#organize' }, `整理方案 #${L.proposal.id} 有 ${L.proposal.pending} 条等你决定 →`)) : null,
       L.jobs ? jobsTable(L.jobs.filter(j => j.enabled && !(j.once && j.last && j.last.status === 'ok'))) : null);
     if (!chartDrawn) { chartCard.append(hourlyChart(o.hourly).node); chartDrawn = true; }
   });
@@ -696,6 +699,48 @@ async function viewChats() {
 
 // ---- 例行任务 ----
 
+// ---- 整理方案 ----
+
+async function viewOrganize() {
+  page('整理', h('span', { class: 'muted' }, '分身提出的分类、飞书标签、置顶、标记、免打扰方案；你同意哪条执行哪条，都能撤销'));
+  const box = h('div');
+  $main.append(box);
+  async function load() {
+    const d = await api('/api/proposals');
+    if (!d.enabled) { put(box, h('section', { class: 'card' }, h('div', { class: 'empty' }, '整理方案没有打开（.env 里设 LARKX_CHAT_GROUPS=true 和 LARKX_ORGANIZE=true 后重启服务）。'))); return; }
+    const list = d.proposals;
+    if (!list.length) { put(box, h('section', { class: 'card' }, h('div', { class: 'empty' }, '还没有整理方案。打开会话分类和 LARKX_ORGANIZE 后，分身会先提一份，之后每周一份；也可以在飞书里让它「整理一下我的会话」。'))); return; }
+    put(box, list.map(p => {
+      const checks = {};
+      const items = p.items.map(i => {
+        const cb = i.status === 'pending' ? h('input', { type: 'checkbox', checked: true }) : null;
+        if (cb) checks[i.seq] = cb;
+        const tag = { applied: '已执行', failed: '失败', rejected: '已放弃', undone: '已撤销' }[i.status];
+        return h('div', { class: 'item' }, h('div', { class: 'meta' }, cb, h('b', {}, `${i.seq}.`), h('span', { class: 'tag' }, { group: '分类', label: '飞书标签', pin: '置顶', unpin: '取消置顶', pin_order: '置顶排序', flag: '标记', mute: '免打扰' }[i.kind] || i.kind),
+          tag ? h('span', { class: 'tag' + (i.status === 'failed' ? ' bad' : '') }, tag) : null),
+          h('div', { class: 'body' }, i.title), i.reason ? h('div', { class: 'muted' }, i.reason) : null, i.error ? h('div', { class: 'muted' }, i.error) : null);
+      });
+      const selected = () => Object.entries(checks).filter(([, c]) => c.checked).map(([s]) => Number(s));
+      const run = (action, msg) => act(async () => {
+        const r = await api(`/api/proposals/${p.id}`, { method: 'POST', body: { action, items: action === 'undo' ? [] : selected() } }); load();
+        return r;
+      }, r => `${msg}: ${r.results.length} 条`);
+      const pending = Object.keys(checks).length, applied = p.items.some(i => i.status === 'applied');
+      return h('section', { class: 'card' },
+        h('h2', {}, `#${p.id} ${{ init: '初始整理', weekly: '每周整理', manual: '整理' }[p.trigger] || '整理'}`, h('span', { class: 'grow' }), h('span', { class: 'muted', style: 'font-weight:400' }, fmt(p.created_at))),
+        p.summary ? h('p', { class: 'sec', style: 'margin-top:0' }, p.summary) : null,
+        h('div', { class: 'list' }, items),
+        h('div', { class: 'row', style: 'margin-top:12px' }, h('div', { style: 'flex:1' }),
+          pending ? h('button', { class: 'btn', onclick: () => run('reject', '已放弃') }, '放弃所选') : null,
+          pending ? h('button', { class: 'btn primary', onclick: () => confirm(`执行所选的 ${selected().length} 条? 会改你飞书里的置顶、标记、标签、免打扰`) && run('apply', '已执行') }, '执行所选') : null,
+          applied ? h('button', { class: 'btn danger', onclick: () => confirm('撤销这个方案里已执行的全部条目?') && run('undo', '已撤销') }, '撤销已执行') : null));
+    }));
+  }
+  await load();
+}
+
+// ---- 例行任务 ----
+
 function jobsTable(jobs, refresh) {
   return h('table', {}, h('tbody', {}, jobs.map(j => h('tr', {},
     h('td', {}, h('b', {}, j.title), h('div', { class: 'muted mono', style: 'font-size:12px' }, j.name)),
@@ -724,7 +769,7 @@ async function viewJobs() {
 
 // ---- 路由 ----
 
-const VIEWS = { overview: viewOverview, conversations: viewConversations, chats: viewChats, jobs: viewJobs, activity: viewActivity, tasks: viewTasks,
+const VIEWS = { overview: viewOverview, conversations: viewConversations, chats: viewChats, organize: viewOrganize, jobs: viewJobs, activity: viewActivity, tasks: viewTasks,
   takeovers: viewTakeovers, whitelist: viewWhitelist, settings: viewSettings, memory: viewMemory, persona: viewPersona, logs: viewLogs, command: viewCommand };
 
 async function route() {
