@@ -47,6 +47,18 @@ def action_words(cfg: dict) -> tuple:
     return tuple(w for w in str(cfg.get('bot_action_keywords') or '').split(',') if w.strip())
 
 
+def own_chats(profiles: dict, cfg: dict = None, owner_id: str = '') -> set:
+    """本人自己的私聊(给数字人下指令、收汇报的通道): 记下的本人私聊会话, 加上私聊对象是本人的。清理和界面都用这个判断。"""
+    from . import notify
+    from .config import load_config
+    cfg = load_config() if cfg is None else cfg
+    own = {str(c) for c in (cfg.get('notify_chat'), notify._load().get('owner_chat')) if c}
+    for cid, p in profiles.items():
+        if p.chat_type == 1 and ((owner_id and str(p.peer_id or '') == str(owner_id)) or p.suggested_group == '本人'):
+            own.add(cid)
+    return own
+
+
 def _has(name: str, words) -> bool:
     low = (name or '').lower()
     return any(w in low for w in words)
@@ -210,6 +222,7 @@ class ChatStore:
             profiles = {p.chat_id: p for p in s.query(ChatProfile).all()}
         finally:
             s.close()
+        own = own_chats(profiles)
         ids = list(chat_ids) if chat_ids is not None else list(dict.fromkeys([*chats, *profiles]))
         rows = []
         for cid in ids:
@@ -231,7 +244,7 @@ class ChatStore:
                 'attention': att, 'attention_name': ATTENTION[att], 'attention_source': source,
                 'confirmed': bool(p and p.confirmed),
                 # 本人自己的私聊: 指令和汇报的通道, 清理时不管关注度都不删
-                'kept': bool(p and p.chat_type == 1 and p.suggested_group == '本人'),
+                'kept': cid in own,
                 'suggested_group': p.suggested_group if p else '', 'suggested_attention': p.suggested_attention if p else '',
                 'reason': p.reason if p else '', 'members': p.members if p else 0,
                 'feishu_muted': (p.feishu_muted == 1) if p else False, 'feishu_pinned': bool(p and p.feishu_pinned),
