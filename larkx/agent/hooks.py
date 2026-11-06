@@ -21,11 +21,30 @@ JOBS_RUN = re.compile(r'\b(larkx|lark)\s+jobs\s+run\b')
 # 只看命令位置上的词(跳过引号里的内容和 heredoc 正文), 免得 larkx send ... "用 crontab 定时" 这种也被拦。
 # 这一层只防误用和提示词注入, 不是安全边界: 换个写法(python 拼路径之类)还是能绕过
 ESCAPE_PROGRAMS = {'systemd-run', 'crontab', 'at', 'batch'}
-# 包一层再执行后面命令的程序, 以及它们带值的选项(值要一起跳过)
-WRAPPERS = {'sudo', 'env', 'nohup', 'command', 'exec', 'time', 'nice', 'ionice', 'setsid', 'timeout', 'xargs', 'stdbuf',
-            'chrt', 'taskset', 'flock', 'unbuffer'}
-WRAPPER_VALUE_OPTS = {'-u', '--unset', '-n', '--adjustment', '-s', '--signal', '-k', '--kill-after', '-c', '-p', '-g',
-                      '-C', '-E', '-I', '-L', '-d', '-a', '-P', '-o', '-e', '-i'}
+# 包一层再执行后面命令的程序: 各自带值的选项(值要一起跳过)、要先跳过几个位置参数、
+# 以及把值当成一条 shell 命令来跑的选项(往里再看一层)。不带值的选项(sudo -i、nice 以外的 -n 之类)只跳过选项本身
+WRAPPERS = {
+    'sudo': ({'-u', '--user', '-g', '--group', '-p', '--prompt', '-C', '--close-from', '-D', '--chdir', '-r', '--role',
+              '-t', '--type', '-U', '--other-user', '-R', '--chroot', '-T', '--command-timeout', '-h', '--host'}, 0, set()),
+    'env': ({'-u', '--unset', '-C', '--chdir'}, 0, {'-S', '--split-string'}),
+    'nohup': (set(), 0, set()),
+    'command': (set(), 0, set()),
+    'exec': ({'-a'}, 0, set()),
+    'time': ({'-f', '--format', '-o', '--output'}, 0, set()),
+    'nice': ({'-n', '--adjustment'}, 0, set()),
+    'ionice': ({'-c', '--class', '-n', '--classdata', '-p', '--pid', '-P', '--pgid', '-u', '--uid'}, 0, set()),
+    'setsid': (set(), 0, set()),
+    'timeout': ({'-s', '--signal', '-k', '--kill-after'}, 1, set()),  # 位置参数: 时长
+    'xargs': ({'-a', '--arg-file', '-d', '--delimiter', '-E', '-e', '--eof', '-I', '--replace', '-L', '--max-lines',
+               '-l', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars', '--process-slot-var'}, 0, set()),
+    'stdbuf': ({'-i', '--input', '-o', '--output', '-e', '--error'}, 0, set()),
+    'chrt': (set(), 1, set()),  # 位置参数: 优先级
+    'taskset': (set(), 1, set()),  # 位置参数: 掩码或 CPU 列表
+    'flock': ({'-w', '--timeout', '--wait', '-E', '--conflict-exit-code'}, 1, {'-c', '--command'}),  # 位置参数: 锁文件
+    'unbuffer': (set(), 0, set()),
+}
+# bash/sh 带值的选项, 找 -c 时要连值一起跳过
+SHELL_VALUE_OPTS = {'-o', '+o', '-O', '+O', '--rcfile', '--init-file'}
 SHELLS = {'bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'}
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w]*)\1")
 
@@ -44,13 +63,45 @@ def _strip_heredocs(command: str) -> str:
     return '\n'.join(out)
 
 
+def _is_sep(tok: str) -> bool:
+    return bool(tok) and set(tok) <= set(';&|()')
+
+
+def _shell_inner(rest: list):
+    """bash/sh 后面的参数里找 -c 要执行的那条命令: 跳过选项(带值的连值一起), 某个短选项里有 c 才算。"""
+    k, has_c = 0, False
+    while k < len(rest) and rest[k][:1] in '-+' and rest[k] not in ('-', '--') and not _is_sep(rest[k]):
+        tok = rest[k]
+        k += 1
+        if tok in SHELL_VALUE_OPTS:
+            k += 1
+        elif not tok.startswith('--') and 'c' in tok[1:]:
+            has_c = True
+    if k < len(rest) and rest[k] == '--':
+        k += 1
+    if has_c and k < len(rest) and not _is_sep(rest[k]):
+        return rest[k]
+    return None
+
+
 def command_words(command: str, depth: int = 0):
     """命令里每一段(;、&&、||、|、&、(、换行、`、$( 分开)要执行的程序名; 引号里的内容不算。
-    timeout 5 at、nice -n 5 at 这种跳过包装命令和它的参数; bash -c "..."、eval "..." 往里再看一层(最多三层)。
+    包装命令(timeout 5 at、sudo -i at、flock /tmp/l at)按各自的选项和位置参数跳过;
+    bash -c "..."、eval "..."、flock ... -c "..."、env -S "..." 往里再看一层(最多三层)。
     解析不了时返回 None。"""
     import shlex
     text = _strip_heredocs(command or '').replace('$(', ' ; ').replace('`', ' ; ')
     words = []
+
+    def nested(inner):
+        if not inner or depth >= 3:
+            return True
+        sub = command_words(inner, depth + 1)
+        if sub is None:
+            return False
+        words.extend(sub)
+        return True
+
     for line in text.splitlines():
         lex = shlex.shlex(line, posix=True, punctuation_chars=';&|()')
         lex.whitespace_split = True
@@ -58,44 +109,51 @@ def command_words(command: str, depth: int = 0):
             tokens = list(lex)
         except ValueError:
             return None
-        i, start, wrapped = 0, True, False
+        i, start, wrapper, positional = 0, True, None, 0
         while i < len(tokens):
             tok = tokens[i]
             i += 1
-            if tok and set(tok) <= set(';&|()'):
-                start, wrapped = True, False
+            if _is_sep(tok):
+                start, wrapper = True, None
                 continue
             if not start:
                 continue
-            if '=' in tok and not tok.startswith('-') and not wrapped:
+            if wrapper is None and '=' in tok and not tok.startswith('-'):
                 continue  # FOO=bar cmd
-            if wrapped:
-                # 包装命令的参数: 选项(带值的连值一起跳过)、timeout 的时长、nice/chrt 的数字、env 的 FOO=bar
-                if tok.startswith('-'):
-                    if tok in WRAPPER_VALUE_OPTS and i < len(tokens):
+            if wrapper is not None:
+                value_opts, _, inner_opts = WRAPPERS[wrapper]
+                if tok == '--':
+                    continue
+                if tok.startswith('-') and len(tok) > 1:
+                    if tok in inner_opts:  # 值本身就是一条命令
+                        if i < len(tokens) and not nested(tokens[i]):
+                            return None
+                        start, wrapper = False, None
+                        i += 1
+                    elif tok in value_opts and i < len(tokens):
                         i += 1
                     continue
-                if re.fullmatch(r'[\d.]+[smhd]?', tok) or ('=' in tok and words and words[-1] == 'env'):
+                if positional > 0:
+                    positional -= 1
+                    continue
+                if wrapper == 'env' and '=' in tok:
+                    continue
+                if wrapper in ('nice', 'chrt') and re.fullmatch(r'-?\d+', tok):
                     continue
             name = tok.rsplit('/', 1)[-1]
             words.append(name)
             if name in WRAPPERS:
-                wrapped = True
+                wrapper, positional = name, WRAPPERS[name][1]
                 continue
-            if depth < 3 and (name in SHELLS or name == 'eval'):
-                rest = tokens[i:]
-                inner = None
-                if name == 'eval':
-                    inner = ' '.join(t for t in rest if not (t and set(t) <= set(';&|()')))
-                elif '-c' in rest or any(t.startswith('-') and 'c' in t[1:] and not t.startswith('--') for t in rest[:3]):
-                    j = next(k for k, t in enumerate(rest) if t == '-c' or (t.startswith('-') and 'c' in t[1:]))
-                    inner = rest[j + 1] if j + 1 < len(rest) else ''
-                if inner:
-                    sub = command_words(inner, depth + 1)
-                    if sub is None:
-                        return None
-                    words += sub
-            start, wrapped = False, False
+            wrapper = None
+            rest = tokens[i:]
+            if name == 'eval':
+                if not nested(' '.join(t for t in rest if not _is_sep(t))):
+                    return None
+            elif name in SHELLS:
+                if not nested(_shell_inner(rest)):
+                    return None
+            start = False
     return words
 
 
