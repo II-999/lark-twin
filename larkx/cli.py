@@ -1639,17 +1639,24 @@ def main():
         args.text += extra
     elif extra:
         parser.error(f'无法识别的参数: {" ".join(extra)}')
-    if is_agent_actor():
+    # 数字人起的命令都要过访客检查: 不只看 LARKX_ACTOR(env -u 去掉它也认得出, 见 inside_twin);
+    # daemon 自己(同一个服务单元里)跑的 daemon/listen 不算
+    if is_agent_actor() or (args.cmd not in SERVICE_CMDS and inside_twin()):
         denied = _guest_denied(args)
         if denied:
             sys.exit(_fail(args, denied, code=3))
     sys.exit(args.fn(args))
 
 
+# 服务本身(systemd 单元里)启动时跑的子命令
+SERVICE_CMDS = ('daemon', 'listen', 'web')
+
+
 def _guest_denied(args) -> str:
-    """访客发起的这一轮(不是本人发起): 只能用少数子命令, 只能看当前会话; 被拦下时通知本人。"""
+    """访客发起的这一轮(不是本人发起): 只能用少数子命令, 只能看当前会话; 被拦下时通知本人。
+    读不到这一轮或这一轮不可信(turn.json 被改过、没签名)时也按访客处理, 只能更严。"""
     from . import guest
-    turn = state.read_turn()
+    turn = state.agent_turn()
     if not guest.is_guest(turn):
         return ''
     st = Storage()
