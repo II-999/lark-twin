@@ -274,3 +274,15 @@ def test_kept_matches_retention(st, monkeypatch):
     assert rows['p5']['kept'] and not rows['p6']['kept']
     profiles = {cid: cs.profile(cid) for cid in ('p5', 'p6')}
     assert groups.own_chats(profiles, dict(DEFAULTS)) == {'p5'}
+
+
+def test_own_chats_requires_p2p(st, monkeypatch):
+    """记下的本人私聊必须是私聊: 配错成群也不会被当成不清理。"""
+    from larkx import notify
+    from larkx.config import DEFAULTS
+    monkeypatch.setattr(notify, '_load', lambda: {})
+    cs = groups.ChatStore(st)
+    cs.save_profile('g7', OWNER, chat_type=2, name='群')
+    cs.save_profile('p8', OWNER, chat_type=1, peer_id=OWNER)
+    profiles = {c: cs.profile(c) for c in ('g7', 'p8')}
+    assert groups.own_chats(profiles, dict(DEFAULTS, notify_chat='g7'), OWNER) == {'p8'}

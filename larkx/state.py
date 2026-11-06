@@ -27,10 +27,12 @@ RELAY_TTL = 8 * 86400
 KINDS = ('message', 'task', 'say', 'system', 'report')
 
 
-def write_turn(kind: str, chat_id: str = '', anchor: str = '', is_owner: bool = False, ref: str = ''):
+def write_turn(kind: str, chat_id: str = '', anchor: str = '', is_owner: bool = False, ref: str = '',
+               locked: dict = None):
+    """locked: daemon 自己的配置里数字人不能用环境变量改的几项(见 config.LOCKED_KEYS), 数字人进程里的命令以这里为准。"""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     data = {'kind': kind, 'chat_id': str(chat_id or ''), 'anchor': anchor or '', 'is_owner': bool(is_owner),
-            'ref': str(ref or ''), 'pid': os.getpid(), 'started_at': time.time()}
+            'ref': str(ref or ''), 'pid': os.getpid(), 'started_at': time.time(), 'locked': locked or {}}
     tmp = TURN_PATH.with_suffix('.tmp')
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
     tmp.replace(TURN_PATH)

@@ -27,11 +27,12 @@ KIND_NAMES = {'group': '分类', 'label': '飞书标签', 'unpin': '取消置顶
               'flag': '标记消息', 'mute': '免打扰'}
 TRIGGER_NAMES = {'init': '初始整理', 'weekly': '每周整理', 'manual': '整理'}
 # LARKX_ORGANIZE_ITEMS 里的名字 -> 改动类型
-ITEM_KINDS = {'分类': ('group',), '置顶': ('pin', 'unpin', 'pin_order'), '免打扰': ('mute',), '标记': ('flag',),
-              '标签': ('label',)}
+# 「标记」(flag)先不开放: 还没实测 UpdateFlagsRequest 会不会顺带把别人的消息标成已读, 不能标已读是硬约束。
+# 实测确认后再加上 '标记': ('flag',)
+ITEM_KINDS = {'分类': ('group',), '置顶': ('pin', 'unpin', 'pin_order'), '免打扰': ('mute',), '标签': ('label',)}
 
 
-ITEM_NAMES = {'group': '分类', 'pin': '置顶', 'mute': '免打扰', 'flag': '标记', 'label': '标签'}
+ITEM_NAMES = {'group': '分类', 'pin': '置顶', 'mute': '免打扰', 'label': '标签'}
 
 
 def enabled(cfg: dict) -> bool:
@@ -45,11 +46,15 @@ def enabled_kinds(cfg: dict) -> set:
 
 
 def kind_label(kind: str) -> str:
-    return next(n for n, ks in ITEM_KINDS.items() if kind in ks)
+    return next((n for n, ks in ITEM_KINDS.items() if kind in ks), '标记' if kind == 'flag' else kind)
 
 
 class Skip(Exception):
     """这一条不执行(比如有用户自己建的同名标签), 记为跳过, 不算失败。"""
+
+
+class NotYet(Exception):
+    """这一条现在还不能执行(比如要先执行建分类的那一条), 留着待定, 之后可以再执行。"""
 
 
 class FeishuOps:
@@ -315,6 +320,9 @@ class OrganizeStore:
             except Skip as e:
                 self._set(ProposalItem, it.id, status='skipped', error=str(e)[:500])
                 out.append((it.seq, f'跳过: {e}'))
+            except NotYet as e:
+                self._set(ProposalItem, it.id, error=str(e)[:500])
+                out.append((it.seq, f'暂不执行: {e}'))
             except Exception as e:
                 self._set(ProposalItem, it.id, status='failed', error=repr(e)[:500])
                 out.append((it.seq, f'失败: {e}'))
@@ -392,18 +400,20 @@ class OrganizeStore:
     # 用户自己的标签(包括同名的)一律不动: 有同名的就跳过这一条
     def _apply_label(self, p, ops):
         g = self.chats.group(p['group'])
+        if not g:  # 分类那一条没执行: 先不建标签, 免得之后被当成用户自己的同名标签、永远跳过
+            raise NotYet(f'分类「{p["group"]}」还没建, 先执行建分类的那一条')
         labels = ops.labels()
-        own = g.feishu_label_id if g and g.feishu_label_id in labels else ''
+        own = g.feishu_label_id if g.feishu_label_id in labels else ''
         if not own and p['group'] in labels.values():
             raise Skip(f'飞书里已有你自己建的标签「{p["group"]}」, 不动它; 要合并请自己在飞书里加会话')
-        local = [r['chat_id'] for r in self.chats.view() if g and r['group_id'] == g.id]
+        local = [r['chat_id'] for r in self.chats.view() if r['group_id'] == g.id]
         old_members = [c for c in local if c not in p['chat_ids']] if own else []
         members = list(dict.fromkeys([*local, *p['chat_ids']]))
         if own:
             ops.delete_label(own)
+            self.chats.update_group(g.id, feishu_label_id='')  # 先清掉, 新建失败时不会指着已删的标签
         new_id = ops.create_label(p['group'], members)
-        if g:
-            self.chats.update_group(g.id, feishu_label_id=new_id)
+        self.chats.update_group(g.id, feishu_label_id=new_id)
         return {'old_id': own, 'old_members': old_members, 'new_id': new_id}
 
     def _undo_label(self, p, snap, ops):

@@ -165,6 +165,7 @@ def test_kinds_filter_submit_and_apply(st):
     assert '没打开「置顶」' in store.apply(full.id, [1], organize.FeishuOps(FakeFeishu()))[0][1]
     from larkx.config import DEFAULTS
     assert organize.enabled_kinds(DEFAULTS) == {'group', 'pin', 'unpin', 'pin_order', 'mute'}
+    assert 'flag' not in organize.enabled_kinds({'organize_items': '标记,标签'})     # 标记先不开放
 
 
 def test_pin_order_keeps_non_chat_shortcuts(st):
@@ -182,9 +183,11 @@ def test_cli_permissions_and_flow(st, monkeypatch, tmp_path, capsys):
     from larkx import notify
     from larkx.config import DEFAULTS
     fs = FakeFeishu()
-    monkeypatch.setattr(cli, 'load_config', lambda: dict(DEFAULTS))
+    from larkx import config
+    monkeypatch.setattr(config, 'load_config', lambda: dict(DEFAULTS))
     assert cli.cmd_organize(_args(action='show')) == 3                      # 默认关: 一律拒绝
-    monkeypatch.setattr(cli, 'load_config', lambda: dict(DEFAULTS, chat_groups=True, organize=True))
+    monkeypatch.setattr(config, 'load_config', lambda: dict(DEFAULTS, chat_groups=True, organize=True))
+    on = {'chat_groups': True, 'organize': True, 'organize_items': DEFAULTS['organize_items']}   # daemon 写进 turn 的
     monkeypatch.setattr(notify, '_load', lambda: {'owner_chat': 'self'})
     monkeypatch.setattr(cli, 'Storage', lambda: st)
     monkeypatch.setattr(cli, 'LarkClient', lambda auth: fs)
@@ -193,17 +196,17 @@ def test_cli_permissions_and_flow(st, monkeypatch, tmp_path, capsys):
     f.write_text(json.dumps({'mute': ['大群']}, ensure_ascii=False), encoding='utf-8')
     monkeypatch.setenv('LARKX_ACTOR', 'agent')
     monkeypatch.setattr(state, 'read_turn', lambda: {'kind': 'system', 'chat_id': 'self', 'is_owner': False,
-                                                     'ref': 'job:review#1'})
+                                                     'ref': 'job:review#1', 'locked': on})
     assert cli.cmd_organize(_args(action='submit', target=str(f))) == 3     # 回顾里不能提交
     monkeypatch.setattr(state, 'read_turn', lambda: {'kind': 'system', 'chat_id': 'self', 'is_owner': False,
-                                                     'ref': 'job:organize#2'})
+                                                     'ref': 'job:organize#2', 'locked': on})
     assert cli.cmd_organize(_args(action='submit', target=str(f))) == 0
     assert '【每周整理方案 #1】' in capsys.readouterr().out
     assert cli.cmd_organize(_args(action='apply', target='1', items='1')) == 3   # 维护任务里不能执行
     assert cli.cmd_organize(_args(action='show')) == 0
-    monkeypatch.setattr(state, 'read_turn', lambda: {'kind': 'message', 'chat_id': 'g1', 'is_owner': True, 'ref': 'm1'})
+    monkeypatch.setattr(state, 'read_turn', lambda: {'kind': 'message', 'chat_id': 'g1', 'is_owner': True, 'ref': 'm1', 'locked': on})
     assert cli.cmd_organize(_args(action='apply', target='1', items='1')) == 3   # 本人在群里说的也不行, 只认私聊
-    monkeypatch.setattr(state, 'read_turn', lambda: {'kind': 'message', 'chat_id': 'self', 'is_owner': True, 'ref': 'm1'})
+    monkeypatch.setattr(state, 'read_turn', lambda: {'kind': 'message', 'chat_id': 'self', 'is_owner': True, 'ref': 'm1', 'locked': on})
     assert cli.cmd_organize(_args(action='apply', items='1')) == 1          # 要写方案编号
     assert cli.cmd_organize(_args(action='apply', target='#1')) == 1        # 要写第几条
     assert cli.cmd_organize(_args(action='apply', target='#1', items='1')) == 0  # 本人在私聊说 "/ai 同意 #1 1"
@@ -246,7 +249,8 @@ def test_organize_prompt_has_context(st, fake_client):
     assert '"pin"' in text and '"mute"' in text and '"flag"' not in text and '飞书标签' not in text   # 默认三类
     full = prompts.BUILDERS['organize'](dict(DEFAULTS, organize_items='分类,置顶,免打扰,标记,标签'), st,
                                         datetime.now(), OWNER, client=fake_client)
-    assert '"flag"' in full and '"labels": true' in full and '1. 分类' in full and '5. 免打扰' in full
+    assert '"labels": true' in full and '1. 分类' in full and '4. 免打扰' in full
+    assert '"flag"' not in full                                                  # 标记没实测前不开放, 写了也不算
 
 
 def test_own_label_rebuilt_from_local_group(st):
@@ -291,3 +295,51 @@ def test_organize_init_timing(tmp_path, monkeypatch, fake_client, backfill_days)
         assert m._once_slot(job) is None
         store.put_state('bootstrap', {'done': True})
     assert m._once_slot(job) == 'once'
+
+
+def test_twin_cannot_bypass_switch_with_env(st, monkeypatch, tmp_path):
+    """数字人清掉 LARKX_ACTOR、自己在环境变量里打开开关: 仍以 daemon 写进 turn 的配置为准, 拒绝。"""
+    from larkx import config, notify
+    monkeypatch.delenv('LARKX_ACTOR', raising=False)
+    monkeypatch.setenv('LARKX_ORGANIZE', 'true')
+    monkeypatch.setenv('LARKX_CHAT_GROUPS', 'true')
+    monkeypatch.setenv('LARKX_ORGANIZE_ITEMS', '分类,置顶,免打扰,标签')
+    monkeypatch.setattr(config, 'inside_twin', lambda: True)
+    monkeypatch.setattr(cli, 'inside_twin', lambda: True)
+    monkeypatch.setattr(notify, '_load', lambda: {'owner_chat': 'self'})
+    monkeypatch.setattr(cli, 'Storage', lambda: st)
+    f = tmp_path / 'p.json'
+    f.write_text(json.dumps({'mute': ['大群']}, ensure_ascii=False), encoding='utf-8')
+    turn = {'kind': 'message', 'chat_id': 'self', 'is_owner': True, 'ref': 'm1',
+            'locked': {'chat_groups': True, 'organize': False, 'organize_items': '分类'}}   # .env 里关着
+    monkeypatch.setattr(state, 'read_turn', lambda: turn)
+    assert cli.cmd_organize(_args(action='submit', target=str(f))) == 3
+    assert cli.cmd_organize(_args(action='apply', target='1', items='1')) == 3
+    monkeypatch.setattr(state, 'read_turn', lambda: None)                          # 读不到 turn: 按默认(关)
+    assert cli.cmd_organize(_args(action='submit', target=str(f))) == 3
+    assert config.load_config()['organize'] is True and config.trusted_config()['organize'] is False
+
+
+def test_label_waits_for_group(st):
+    """分类那一条没执行时, 标签那条不建标签(否则之后会被当成用户的同名标签, 永远跳过)。"""
+    fs, store = FakeFeishu(), organize.OrganizeStore(st)
+    p = store.submit({'groups': [{'name': '新分类', 'chats': ['项目群']}]})
+    res = dict(store.apply(p.id, [2], organize.FeishuOps(fs)))
+    assert res[2].startswith('暂不执行') and fs.labels == {} and store.items(p.id)[1].status == 'pending'
+    assert dict(store.apply(p.id, [1, 2], organize.FeishuOps(fs))) == {1: '已执行', 2: '已执行'}
+
+
+def test_label_recreate_failure_clears_id(st):
+    fs, store = FakeFeishu(), organize.OrganizeStore(st)
+    ops = organize.FeishuOps(fs)
+    cs = groups.ChatStore(st)
+    g = cs.create_group('项目A', 'focus')
+    fs.labels['500'] = ('项目A', [])
+    cs.update_group(g.id, feishu_label_id='500')
+
+    def boom(name, ids):
+        raise RuntimeError('建标签失败')
+    ops.create_label = boom
+    p = store.submit({'groups': [{'name': '项目A', 'chats': ['项目群']}]})
+    assert dict(store.apply(p.id, [2], ops))[2].startswith('失败')
+    assert cs.group('项目A').feishu_label_id == ''                                 # 不再指着已删的标签

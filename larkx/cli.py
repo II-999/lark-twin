@@ -1029,12 +1029,13 @@ def cmd_organize(args):
     """整理方案: list/show 查看; submit 提交(数字人在整理任务里用); apply/reject/undo 执行、放弃、撤销(本人)。
     要打开 LARKX_ORGANIZE(和会话分类); 没打开时一律拒绝。"""
     from . import notify, organize
-    cfg = load_config()
+    from .config import trusted_config
+    cfg = trusted_config()  # 数字人进程里不信它自己带的 LARKX_ORGANIZE 等环境变量
     if not organize.enabled(cfg):
         return _fail(args, '整理方案没有打开: .env 里设 LARKX_CHAT_GROUPS=true 和 LARKX_ORGANIZE=true', code=3)
     st = Storage()
     store = organize.OrganizeStore(st, organize.enabled_kinds(cfg))
-    agent = is_agent_actor()
+    agent = inside_twin()  # 不只看 LARKX_ACTOR: env -u LARKX_ACTOR 再调也认得出是数字人
     turn = state.read_turn() if agent else None
     owner_turn = not agent or bool(turn and turn.get('is_owner') and turn.get('kind') in ('message', 'say'))
     act = args.action

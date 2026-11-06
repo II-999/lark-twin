@@ -176,6 +176,26 @@ def load_config() -> dict:
     return cfg
 
 
+# 数字人不能靠自己带环境变量打开的配置: 数字人进程里以 daemon 写进 turn.json 的值为准
+LOCKED_KEYS = ("chat_groups", "organize", "organize_items")
+
+
+def locked_values(cfg: dict) -> dict:
+    return {k: cfg.get(k) for k in LOCKED_KEYS}
+
+
+def trusted_config() -> dict:
+    """load_config(), 但在数字人进程里, LOCKED_KEYS 这几项不信进程环境变量(数字人可以 env LARKX_ORGANIZE=true 再调命令):
+    取 daemon 这一轮写进 turn.json 的值, 读不到就按默认值(关)。"""
+    cfg = load_config()
+    if inside_twin():
+        from . import state
+        locked = (state.read_turn() or {}).get('locked') or {}
+        for k in LOCKED_KEYS:
+            cfg[k] = locked[k] if k in locked else DEFAULTS[k]
+    return cfg
+
+
 def is_agent_actor() -> bool:
     return os.environ.get(ACTOR_ENV) == "agent"
 

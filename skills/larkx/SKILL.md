@@ -151,7 +151,7 @@ larkx prune --dry-run                                # 按保留天数清理旧�
 
 ## 整理方案
 
-打开 `LARKX_CHAT_GROUPS` 和 `LARKX_ORGANIZE` 后，分身会提出整理会话的调整，私信给本人。提哪几类由 `LARKX_ORGANIZE_ITEMS` 决定：分类、置顶、免打扰（默认），可以再加标记、标签。改的只是本人自己飞书里的设置，不对外发消息；飞书标签只管程序自己建的，你自己的标签不动。
+打开 `LARKX_CHAT_GROUPS` 和 `LARKX_ORGANIZE` 后，分身会提出整理会话的调整，私信给本人。提哪几类由 `LARKX_ORGANIZE_ITEMS` 决定：分类、置顶、免打扰（默认），可以再加标签。改的只是本人自己飞书里的设置，不对外发消息；飞书标签只管程序自己建的，你自己的标签不动。
 
 ```bash
 larkx organize show                      # 最新方案, 每条有编号和理由

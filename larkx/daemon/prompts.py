@@ -65,7 +65,7 @@ ORGANIZE_PROMPT = ('{head}先读 memory/(尤其 我.md、事-*.md)了解本人�
                    'larkx organize submit downloads/organize.json(报错就按提示改了再提交)。方案由系统私信给本人, '
                    '你不用发。{none}JSON 格式:\n{{\n  "summary": "一句话说明这次整理了什么",\n  {schema}\n}}\n\n现状:\n{context}')
 ORGANIZE_INIT_HEAD = '初始整理会话: 刚回填完最近的聊天并初始化了记忆, 现在给本人的全部会话做一次分类。'
-ORGANIZE_WEEKLY_HEAD = '每周整理会话: 看看分类、置顶、标记要不要调整。'
+ORGANIZE_WEEKLY_HEAD = '每周整理会话: 看看会话的整理要不要调整。'
 # 维护任务的共同结尾: 不对外发消息, 最后一句话总结存进运行记录
 MAINTENANCE_TAIL = ' 不要发飞书消息。最后用一两句话说明这次记了或改了什么(会存进运行记录)。'
 

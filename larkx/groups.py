@@ -52,7 +52,17 @@ def own_chats(profiles: dict, cfg: dict = None, owner_id: str = '') -> set:
     from . import notify
     from .config import load_config
     cfg = load_config() if cfg is None else cfg
-    own = {str(c) for c in (cfg.get('notify_chat'), notify._load().get('owner_chat')) if c}
+    if not owner_id:
+        try:  # 读本地凭证, 不联网
+            from .protocol import LarkAuth
+            owner_id = str(LarkAuth().user_id or '')
+        except Exception:
+            owner_id = ''
+    own = set()
+    for c in (cfg.get('notify_chat'), notify._load().get('owner_chat')):  # 优先认记下的本人私聊, 但必须是私聊
+        p = profiles.get(str(c)) if c else None
+        if c and (p is None or p.chat_type in (0, 1)):
+            own.add(str(c))
     for cid, p in profiles.items():
         if p.chat_type == 1 and ((owner_id and str(p.peer_id or '') == str(owner_id)) or p.suggested_group == '本人'):
             own.add(cid)
